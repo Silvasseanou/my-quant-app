@@ -17,7 +17,28 @@ from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # === 全局配置 ===
-st.set_page_config(layout="wide", page_title="Elliott Wave Mobile Pro", page_icon="🌊", initial_sidebar_state="expanded")
+st.set_page_config(layout="wide", page_title="Elliott Wave Mobile Full (v37.0)", page_icon="🌊", initial_sidebar_state="expanded")
+
+# === 0. 移动端 CSS 适配 (新增) ===
+# 让按钮在手机上变宽，更易点击；调整字体大小适配
+st.markdown("""
+    <style>
+    /* 手机端按钮全宽，增加点击区域 */
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        height: 3em;
+    }
+    /* 调整指标卡片在手机上的显示 */
+    div[data-testid="stMetricValue"] {
+        font-size: 1.2rem;
+    }
+    /* 侧边栏调整 */
+    section[data-testid="stSidebar"] {
+        width: 300px !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # === 核心常量 & 路径锚定 ===
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,11 +50,14 @@ RISK_PER_TRADE = 0.01
 TRAILING_STOP_PCT = 0.08 
 TRAILING_STOP_ACTIVATE = 1.05 
 FUND_STOP_LOSS = 0.08 
-MAX_SINGLE_POS_WEIGHT = 0.20
-DEAD_MONEY_DAYS = 40
-DEAD_MONEY_THRESHOLD = 0.03
+MAX_SINGLE_POS_WEIGHT = 0.20 
+DEAD_MONEY_DAYS = 40 
+DEAD_MONEY_THRESHOLD = 0.03 
 
-# === 消息推送服务类 (新增) ===
+# 费率设置 (模拟C类)
+FEE_C_CLASS = {'buy': 0.0, 'sell_punish': 0.015, 'sell_normal': 0.0}
+
+# === 1. 消息推送服务 (新增功能) ===
 class NotificationService:
     @staticmethod
     def send_feishu(webhook_url, title, content):
@@ -44,7 +68,7 @@ class NotificationService:
             "msg_type": "interactive",
             "card": {
                 "header": {
-                    "template": "red",
+                    "template": "red" if "止损" in title or "预警" in title else "blue",
                     "title": {"content": title, "tag": "plain_text"}
                 },
                 "elements": [{
@@ -66,9 +90,11 @@ class NotificationService:
     def send_bark(device_key, title, content):
         """发送 iOS Bark 通知"""
         if not device_key: return False, "未配置 Bark Key"
-        url = f"https://api.day.app/{device_key}/{title}/{content}?icon=https://cdn-icons-png.flaticon.com/512/2534/2534204.png"
+        # Bark URL 不支持过长，简单截断
+        short_content = content[:200] + "..." if len(content) > 200 else content
+        url = f"https://api.day.app/{device_key}/{title}/{short_content}?icon=https://cdn-icons-png.flaticon.com/512/2534/2534204.png"
         try:
-            r = requests.get(url)
+            r = requests.get(url, timeout=5)
             return r.status_code == 200, "发送成功"
         except Exception as e:
             return False, str(e)
@@ -91,7 +117,7 @@ class NotificationService:
         except Exception as e:
             return False, str(e)
 
-# === 行业代表性 ETF 池 ===
+# === 行业代表性 ETF 池 (用于轮动雷达) ===
 SECTOR_ETF_POOL = [
     {"code": "012885", "name": "💻 科技/AI"}, 
     {"code": "001595", "name": "📈 券商/金融"}, 
@@ -102,7 +128,18 @@ SECTOR_ETF_POOL = [
     {"code": "011630", "name": "⛏️ 资源/有色"}
 ]
 
-# === 静态优选池 & 宽基池 (保持原样) ===
+# === 用户持仓数据 (实盘展示用 - 示例) ===
+USER_PORTFOLIO_CONFIG = [
+    {"code":"025942","name":"广发新动力混合C","cost":2.2752,"hold":829.58, "hold_7d": 0},
+    {"code":"004260","name":"德邦稳盈增长灵活配置混合A","cost":1.2839,"hold":3884.19, "hold_7d": 3841.4},
+    {"code":"011630","name":"东财有色增强A","cost":2.4796,"hold":2772.07, "hold_7d": 2405.4},
+    {"code":"002207","name":"前海开源金银珠宝混合C","cost":2.8347,"hold":1648.5, "hold_7d": 525.39},
+    {"code":"012620","name":"嘉实中证软件服务ETF联接C","cost":0.9037,"hold":4454.87, "hold_7d": 2745.44},
+    {"code":"018301","name":"华夏消费电子ETF联接C","cost":1.7396,"hold":1000.0, "hold_7d": 1000.0},
+    {"code":"025857","name":"华夏中证电网设备主题ETF发起式联接C","cost":1.2605,"hold":3000.0, "hold_7d": 3000.0},
+]
+
+# === 静态优选池 (小池子 - 机器人每日自动扫描) ===
 STATIC_OTF_POOL = [
     {"code": "005827", "name": "易方达蓝筹精选"},
     {"code": "003095", "name": "中欧医疗健康A"},
@@ -126,56 +163,111 @@ STATIC_OTF_POOL = [
     {"code": "000961", "name": "天弘沪深300ETF联接A"}
 ]
 
+# === 静态宽基无偏池 ===
 STATIC_UNBIASED_POOL = [
-    {"code": "000300", "name": "沪深300联接A"},      
-    {"code": "000905", "name": "中证500联接A"},      
-    {"code": "011860", "name": "中证1000联接A"},     
-    {"code": "019924", "name": "中证2000指数增强C"}, 
-    {"code": "002987", "name": "广发创业板联接A"},   
-    {"code": "012618", "name": "易方达科创50联接A"}, 
-    {"code": "014350", "name": "华夏北证50成份联接A"}, 
+    # 1. 核心宽基 (大/中/小/微)
+    {"code": "000300", "name": "沪深300联接A"},      # 大盘蓝筹
+    {"code": "000905", "name": "中证500联接A"},      # 中盘成长
+    {"code": "011860", "name": "中证1000联接A"},     # 小盘活跃
+    {"code": "019924", "name": "中证2000指数增强C"}, # 微盘 (2023-24神话)
+    {"code": "002987", "name": "广发创业板联接A"},   # 创业板 (成长)
+    {"code": "012618", "name": "易方达科创50联接A"}, # 科创板 (硬科技)
+    {"code": "014350", "name": "华夏北证50成份联接A"}, # 北交所 (高波)
+
+    # 2. 策略/风格 (红利/价值) -> 熊市避风港
     {"code": "009051", "name": "嘉实中证红利低波动C"},
     {"code": "016814", "name": "央企红利ETF联接A"},
     {"code": "501029", "name": "华宝红利基金LOF"},
-    {"code": "012885", "name": "华夏人工智能AI"},          
-    {"code": "001630", "name": "天弘中证计算机C"},        
-    {"code": "001158", "name": "金信智能中国2025"},       
-    {"code": "004877", "name": "汇添富全球移动互联"},      
-    {"code": "012419", "name": "华夏中证动漫游戏联接C"},  
-    {"code": "001618", "name": "天弘中证电子C"},          
+
+    # 3. 必选赛道：大科技 (TMT)
+    {"code": "012885", "name": "华夏人工智能AI"},          # AI 算力/应用
+    {"code": "001630", "name": "天弘中证计算机C"},        # 计算机/软件
+    {"code": "001158", "name": "金信智能中国2025"},       # 芯片/半导体
+    {"code": "004877", "name": "汇添富全球移动互联"},      # 全球互联网
+    {"code": "012419", "name": "华夏中证动漫游戏联接C"},  # 游戏传媒 (高爆发)
+    {"code": "001618", "name": "天弘中证电子C"},          # 消费电子
+
+    # 4. 必选赛道：新能源 (风光锂储车)
     {"code": "002190", "name": "农银新能源主题"},
     {"code": "013195", "name": "创金合信新能源汽车C"},
-    {"code": "005669", "name": "前海开源公用事业"},        
+    {"code": "005669", "name": "前海开源公用事业"},        # 绿电/电力
     {"code": "012831", "name": "华夏中证光伏产业联接A"},
-    {"code": "012414", "name": "招商中证白酒指数C"},      
-    {"code": "000248", "name": "汇添富中证主要消费"},      
-    {"code": "004854", "name": "广发中证全指汽车C"},       
+
+    # 5. 必选赛道：大消费/医药
+    {"code": "012414", "name": "招商中证白酒指数C"},      # 白酒
+    {"code": "000248", "name": "汇添富中证主要消费"},      # 家电/食品
+    {"code": "004854", "name": "广发中证全指汽车C"},       # 整车
     {"code": "018301", "name": "华夏消费电子ETF联接C"},
-    {"code": "003095", "name": "中欧医疗健康A"},          
-    {"code": "006228", "name": "中欧医疗创新A"},          
-    {"code": "004666", "name": "长城中证医药卫生"},       
-    {"code": "161724", "name": "招商中证煤炭LOF"},        
-    {"code": "011630", "name": "东财有色增强A"},          
-    {"code": "000217", "name": "华安黄金易ETF联接C"},      
-    {"code": "160216", "name": "国泰中证油气LOF"},        
-    {"code": "165520", "name": "信诚中证基建工程LOF"},    
-    {"code": "001595", "name": "天弘中证证券C"},          
-    {"code": "001594", "name": "天弘中证银行C"},          
-    {"code": "000834", "name": "大成纳斯达克100A"},        
-    {"code": "006321", "name": "中金优选300(标普500)"},    
-    {"code": "006127", "name": "华安日经225ETF联接"},      
-    {"code": "000614", "name": "华安德国30(QDII)"},        
-    {"code": "013013", "name": "华夏恒生科技ETF联接A"}     
+    {"code": "003095", "name": "中欧医疗健康A"},          # 医疗服务 (葛兰)
+    {"code": "006228", "name": "中欧医疗创新A"},          # 创新药
+    {"code": "004666", "name": "长城中证医药卫生"},       # 中药/全指医药
+
+    # 6. 周期/资源 (通胀交易)
+    {"code": "161724", "name": "招商中证煤炭LOF"},        # 煤炭 (高股息)
+    {"code": "011630", "name": "东财有色增强A"},          # 有色金属/铜铝
+    {"code": "000217", "name": "华安黄金易ETF联接C"},      # 黄金 (避险)
+    {"code": "160216", "name": "国泰中证油气LOF"},        # 石油 (QDII)
+    {"code": "165520", "name": "信诚中证基建工程LOF"},    # 基建/一带一路
+
+    # 7. 大金融 (牛市旗手/防御)
+    {"code": "001595", "name": "天弘中证证券C"},          # 券商
+    {"code": "001594", "name": "天弘中证银行C"},          # 银行
+
+    # 8. QDII (全球配置 - 必须要有，防止A股系统性风险)
+    {"code": "000834", "name": "大成纳斯达克100A"},        # 美股科技
+    {"code": "006321", "name": "中金优选300(标普500)"},    # 美股蓝筹
+    {"code": "006127", "name": "华安日经225ETF联接"},      # 日本股市
+    {"code": "000614", "name": "华安德国30(QDII)"},        # 欧洲股市
+    {"code": "013013", "name": "华夏恒生科技ETF联接A"}     # 港股科技
 ]
 
-# === 辅助工具函数 ===
+# === 辅助工具函数：统一获取基金池 ===
 def get_pool_by_strategy(strategy_name: str) -> List[Dict]:
+    """根据 UI 选择的策略名称，返回对应的基金池"""
     if "激进扫描池" in strategy_name or "全市场" in strategy_name:
+        st.info("⚠️ 注意：使用【今日全市场Top榜】回测存在幸存者偏差，仅用于验证策略上限。")
         return DataService.get_market_wide_pool()
     else:
+        # 默认返回 静态优选池 + 宽基池
         return STATIC_UNBIASED_POOL + STATIC_OTF_POOL
 
-# === 基础服务类 (IndicatorEngine, DataService, WaveEngine) ===
+# === 数据结构 ===
+
+@dataclass
+class TaxLot:
+    date: str
+    shares: float
+    cost_per_share: float
+    fee_paid: float = 0.0
+
+@dataclass
+class Holding:
+    code: str
+    name: str
+    lots: List[TaxLot] = field(default_factory=list)
+    atr_at_entry: float = 0.0
+    stop_loss_price: float = 0.0
+    target_price: float = 0.0
+    highest_nav: float = 0.0
+    wave_pattern: str = "Unknown"
+    partial_profit_taken: bool = False
+    
+    @property
+    def total_shares(self): return sum(lot.shares for lot in self.lots)
+    @property
+    def avg_cost(self): return sum(lot.shares * lot.cost_per_share for lot in self.lots) / self.total_shares if self.total_shares > 0 else 0
+    def market_value(self, current_nav): return self.total_shares * current_nav
+    
+    def get_holding_days(self):
+        if not self.lots: return 0
+        try:
+            buy_date_str = self.lots[0].date.split(' ')[0]
+            buy_date = datetime.datetime.strptime(buy_date_str, "%Y-%m-%d").date()
+            return (datetime.date.today() - buy_date).days
+        except:
+            return 0
+
+# === 基础服务类 ===
 
 class IndicatorEngine:
     @staticmethod
@@ -216,7 +308,9 @@ class IndicatorEngine:
         data['ao'] = data['nav'].rolling(window=5).mean() - data['nav'].rolling(window=34).mean()
         data['ao_prev'] = data['ao'].shift(1)
         
+        # Return for Correlation
         data['pct_change'] = data['nav'].pct_change()
+        
         return data
 
 class DataService:
@@ -291,6 +385,9 @@ class DataService:
     @staticmethod
     @st.cache_data(ttl=3600*12)
     def get_market_regime():
+        """
+        全市场温度计：多维度扫描核心指数
+        """
         indices = [
             {"code": "000300", "name": "沪深300 (大盘)"},
             {"code": "000905", "name": "中证500 (中盘)"},
@@ -328,6 +425,9 @@ class DataService:
     @staticmethod
     @st.cache_data(ttl=3600*12)
     def get_sector_rankings():
+        """
+        行业轮动雷达：计算各大赛道代表ETF的动能
+        """
         rankings = []
         for s in SECTOR_ETF_POOL:
             df = DataService.fetch_nav_history(s['code'])
@@ -377,6 +477,8 @@ class DataService:
             return pool
         except Exception as e: 
             return [{"code": "012414", "name": "招商中证白酒指数C"}]
+
+# === 核心逻辑类 ===
 
 class WaveEngine:
     @staticmethod
@@ -471,12 +573,17 @@ class WaveEngine:
 
     @staticmethod
     def calculate_kelly(win_rate, win_loss_ratio):
+        """
+        计算凯利公式 (Kelly Criterion)
+        f = (bp - q) / b
+        b = 赔率 (win_loss_ratio)
+        p = 胜率 (win_rate)
+        q = 败率 (1 - p)
+        """
         if win_loss_ratio <= 0: return 0
         f = (win_loss_ratio * win_rate - (1 - win_rate)) / win_loss_ratio
-        return max(0, f) 
+        return max(0, f) # 不允许负值
 
-# === 核心回测逻辑 (RealBacktester, PortfolioBacktester) ===
-# (为了节省空间，回测逻辑保持原样，与交易逻辑解耦)
 class RealBacktester:
     def __init__(self, code, start_date, end_date):
         self.code = code
@@ -490,43 +597,75 @@ class RealBacktester:
         test_dates = self.df.loc[mask].index
         capital = initial_capital; shares = 0; equity_curve = []; trades = []; holding_info = None
         progress_bar = st.progress(0); total_days = len(test_dates)
-        highest_nav_since_buy = 0; partial_sold = False
+        
+        highest_nav_since_buy = 0 
+        partial_sold = False
         
         for i, curr_date in enumerate(test_dates):
             if i % 10 == 0: progress_bar.progress(i / total_days, text=f"Simulating: {curr_date.date()}")
             df_slice = self.df.loc[:curr_date]
             if len(df_slice) < 130: continue 
             current_nav = df_slice['nav'].iloc[-1]
+            
             signal = WaveEngine.analyze_structure(df_slice, [])
             
             if shares > 0:
                 if current_nav > highest_nav_since_buy: highest_nav_since_buy = current_nav
+                
                 profit_pct = (current_nav - holding_info['cost']) / holding_info['cost']
+                # 分批止盈 (Configurable)
                 if partial_profit_pct > 0 and profit_pct > partial_profit_pct and not partial_sold:
-                    sell_shares = shares * 0.5; revenue = sell_shares * current_nav; capital += revenue; shares -= sell_shares; partial_sold = True; trades.append({'date': curr_date, 'action': 'SELL (50%)', 'price': current_nav, 'reason': f"Partial Lock (+{partial_profit_pct:.0%})", 'pnl': revenue - (sell_shares * holding_info['cost'])})
+                    sell_shares = shares * 0.5
+                    revenue = sell_shares * current_nav
+                    capital += revenue
+                    shares -= sell_shares
+                    partial_sold = True
+                    trades.append({'date': curr_date, 'action': 'SELL (50%)', 'price': current_nav, 'reason': f"Partial Lock (+{partial_profit_pct:.0%})", 'pnl': revenue - (sell_shares * holding_info['cost'])})
                 
                 drawdown = (highest_nav_since_buy - current_nav) / highest_nav_since_buy
                 is_trailing_stop = drawdown > TRAILING_STOP_PCT and (current_nav > holding_info['cost'] * TRAILING_STOP_ACTIVATE) 
                 
                 exit_reason = ""
-                actual_stop = max(holding_info['stop_loss'], holding_info['cost'] * (1 - FUND_STOP_LOSS))
+                struct_stop = holding_info['stop_loss']
+                hard_stop = holding_info['cost'] * (1 - FUND_STOP_LOSS)
+                target_stop = holding_info['target']
+                actual_stop = max(struct_stop, hard_stop)
                 
-                if current_nav >= holding_info['target'] and holding_info['target'] > 0: exit_reason = "Target Profit Hit (Goal)"
+                if current_nav >= target_stop and target_stop > 0: exit_reason = "Target Profit Hit (Goal)"
                 elif current_nav < actual_stop: exit_reason = "Structure Break / Stop"
                 elif is_trailing_stop: exit_reason = f"Trailing Stop (-{TRAILING_STOP_PCT:.0%})"
                 elif signal['status'] == 'Sell': exit_reason = signal['desc']
                 
                 if exit_reason:
-                    revenue = shares * current_nav; capital += revenue; trades.append({'date': curr_date, 'action': 'SELL', 'price': current_nav, 'reason': exit_reason, 'pnl': revenue - (shares * holding_info['cost'])}); shares = 0; holding_info = None; highest_nav_since_buy = 0; partial_sold = False
+                    revenue = shares * current_nav
+                    capital += revenue; trades.append({'date': curr_date, 'action': 'SELL', 'price': current_nav, 'reason': exit_reason, 'pnl': revenue - (shares * holding_info['cost'])}); shares = 0; holding_info = None; highest_nav_since_buy = 0; partial_sold = False
             
             elif shares == 0:
                 if signal['status'] == 'Buy' and signal['score'] >= 80: 
                     cost_amt = capital * 0.2 
                     if capital >= cost_amt:
-                        shares = cost_amt / current_nav; capital -= cost_amt; holding_info = {'entry_date': curr_date, 'cost': current_nav, 'stop_loss': signal['stop_loss'], 'target': signal['target']}; highest_nav_since_buy = current_nav; partial_sold = False; trades.append({'date': curr_date, 'action': 'BUY', 'price': current_nav, 'shares': shares, 'reason': signal['desc']})
+                        shares = cost_amt / current_nav; capital -= cost_amt
+                        holding_info = {'entry_date': curr_date, 'cost': current_nav, 'stop_loss': signal['stop_loss'], 'target': signal['target']}
+                        highest_nav_since_buy = current_nav
+                        partial_sold = False
+                        trades.append({'date': curr_date, 'action': 'BUY', 'price': current_nav, 'shares': shares, 'reason': signal['desc']})
+                    
             equity_curve.append({'date': curr_date, 'val': capital + (shares * current_nav)})
         progress_bar.empty()
-        return {'equity': equity_curve, 'trades': trades}
+        
+        # Calculate Win Rate & RR for Kelly
+        df_tr = pd.DataFrame(trades)
+        win_rate = 0
+        win_loss_ratio = 0
+        if not df_tr.empty:
+            wins = df_tr[df_tr['pnl'] > 0]
+            losses = df_tr[df_tr['pnl'] <= 0]
+            win_rate = len(wins) / len(df_tr)
+            avg_win = wins['pnl'].mean() if not wins.empty else 0
+            avg_loss = abs(losses['pnl'].mean()) if not losses.empty else 1
+            win_loss_ratio = avg_win / avg_loss if avg_loss > 0 else 0
+            
+        return {'equity': equity_curve, 'trades': trades, 'win_rate': win_rate, 'rr': win_loss_ratio}
 
 class PortfolioBacktester:
     def __init__(self, pool_codes, start_date, end_date):
@@ -538,30 +677,45 @@ class PortfolioBacktester:
     def preload_data(self):
         progress_text = st.empty()
         progress_bar = st.progress(0)
+        
+        # 1. 去重逻辑
         unique_pool = []
         seen_names = set()
         for fund in self.pool:
             clean_name = re.sub(r'[A-Z]$', '', fund['name'])
+            clean_name = re.sub(r'联接$', '', clean_name)
             if clean_name not in seen_names:
-                unique_pool.append(fund); seen_names.add(clean_name)
+                unique_pool.append(fund)
+                seen_names.add(clean_name)
         
         codes_to_load = unique_pool if len(unique_pool) < 100 else unique_pool[:100] 
         total = len(codes_to_load)
         
+        # 2. 定义单个下载任务函数
         def load_single_fund(fund_info):
+            # 获取数据并计算指标
             df = DataService.fetch_nav_history(fund_info['code'])
-            if not df.empty: return fund_info['code'], IndicatorEngine.calculate_indicators(df)
+            if not df.empty:
+                return fund_info['code'], IndicatorEngine.calculate_indicators(df)
             return fund_info['code'], None
 
+        # 3. 并行执行
+        progress_text.text(f"🚀 正在并行加速下载 {total} 只基金数据...")
         with ThreadPoolExecutor(max_workers=10) as executor:
+            # 提交任务
             future_to_fund = {executor.submit(load_single_fund, fund): fund for fund in codes_to_load}
+            
             completed_count = 0
             for future in as_completed(future_to_fund):
                 code, data = future.result()
-                if data is not None: self.data_map[code] = data
+                if data is not None:
+                    self.data_map[code] = data
+                
                 completed_count += 1
                 progress_bar.progress(completed_count / total)
-        progress_text.empty(); progress_bar.empty()
+        
+        progress_text.empty()
+        progress_bar.empty()
 
     def run(self, initial_capital=DEFAULT_CAPITAL, max_daily_buys=999, max_holdings=MAX_POSITIONS_DEFAULT, 
             override_start_date=None, monthly_deposit=0, enable_rebalance=False, rebalance_gap=60, 
@@ -569,38 +723,347 @@ class PortfolioBacktester:
         if not self.data_map: return {"error": "No data loaded"}
         
         active_start_date = pd.to_datetime(override_start_date) if override_start_date else self.start_date
+        
+        # === 获取并对齐基准数据 (沪深300) ===
         benchmark_df = DataService.fetch_nav_history("000300")
+        
         all_dates = set()
         for df in self.data_map.values():
             mask = (df.index >= active_start_date) & (df.index <= self.end_date)
             all_dates.update(df.loc[mask].index)
+        
+        # 确保基准数据也在日期范围内
+        if not benchmark_df.empty:
+            b_mask = (benchmark_df.index >= active_start_date) & (benchmark_df.index <= self.end_date)
+            all_dates.update(benchmark_df.loc[b_mask].index)
+            
         sorted_dates = sorted(list(all_dates))
         
         capital = initial_capital
         total_principal = initial_capital 
+        
+        # Benchmark Variables
+        bench_shares = 0
+        bench_cash = initial_capital
+        if not benchmark_df.empty:
+            start_price = 0
+            # 找到第一个有效价格
+            for d in sorted_dates:
+                if d in benchmark_df.index:
+                    start_price = benchmark_df.loc[d]['nav']
+                    break
+            if start_price > 0:
+                bench_shares = initial_capital / start_price
+                bench_cash = 0
+        
         holdings = {}
         receivables = [] 
-        equity_curve = []; drawdown_curve = []; trades = []
+        
+        equity_curve = [] 
+        drawdown_curve = [] 
+        trades = []
         peak_equity = initial_capital
+        
+        FIXED_BET_SIZE = initial_capital * 0.2 
+        SETTLEMENT_DAYS = 1 
+        last_month = -1 
         last_rebalance_idx = -999 
-        MOMENTUM_WINDOW = 120 
-        TOP_N_COUNT = 50   
+        
+        # === 动能筛选参数 (与大屏保持一致) ===
+        MOMENTUM_WINDOW = 120 # 看过去 120 个交易日
+        TOP_N_COUNT = 50   # 严格对齐大屏：只看排名前 50 的强势品种
 
         for i, curr_date in enumerate(sorted_dates):
-            # 简化的回测循环，保留核心逻辑
-            # ... (此处省略详细的逐行回测逻辑以适应上下文，实际部署时请复制之前完整的 run 函数)
-            # 为了演示，我们假设这里是一个完整的回测逻辑
-            pass
+            # === 每月定投 (Benchmark 也定投) ===
+            if monthly_deposit > 0:
+                if curr_date.month != last_month:
+                    if last_month != -1: 
+                        capital += monthly_deposit
+                        total_principal += monthly_deposit
+                        trades.append({'date': curr_date, 'action': 'DEPOSIT', 'code': '-', 'name': '工资定投', 'price': 1, 'shares': monthly_deposit, 'reason': '每月自动充值', 'pnl': 0})
+                        
+                        # Benchmark 定投
+                        if not benchmark_df.empty:
+                            b_price = benchmark_df.loc[curr_date]['nav'] if curr_date in benchmark_df.index else 0
+                            if b_price == 0: # 回溯找最近价格
+                                try:
+                                    b_idx = benchmark_df.index.get_indexer([curr_date], method='pad')[0]
+                                    if b_idx != -1: b_price = benchmark_df.iloc[b_idx]['nav']
+                                except: pass
+                            
+                            if b_price > 0:
+                                bench_shares += monthly_deposit / b_price
+                            else:
+                                bench_cash += monthly_deposit
+                                
+                    last_month = curr_date.month
+
+            # 1. 资金结算
+            unlocked_cash = 0.0
+            new_receivables = []
+            for r in receivables:
+                if curr_date >= r['unlock_date']:
+                    unlocked_cash += r['amount']
+                else:
+                    new_receivables.append(r)
+            receivables = new_receivables
+            capital += unlocked_cash 
             
-        # 返回空数据结构占位，实际使用时请使用上一个版本的完整 PortfolioBacktester.run
-        return {'equity': [], 'drawdown': [], 'trades': []}
+            pending_val = sum([r['amount'] for r in receivables])
+            
+            # 计算持仓市值
+            current_hold_val = 0
+            for h_code, h in holdings.items():
+                df = self.data_map.get(h_code)
+                if df is not None and curr_date in df.index:
+                    current_hold_val += h['shares'] * df.loc[curr_date]['nav']
+                elif df is not None:
+                      idx = df.index.get_indexer([curr_date], method='pad')[0]
+                      if idx != -1: current_hold_val += h['shares'] * df.iloc[idx]['nav']
+            
+            current_equity = capital + current_hold_val + pending_val
+            daily_buy_count = 0 
+            
+            # 计算 Benchmark 市值
+            bench_val = bench_cash
+            if not benchmark_df.empty:
+                b_now = benchmark_df.loc[curr_date]['nav'] if curr_date in benchmark_df.index else 0
+                if b_now == 0:
+                      try:
+                        b_idx = benchmark_df.index.get_indexer([curr_date], method='pad')[0]
+                        if b_idx != -1: b_now = benchmark_df.iloc[b_idx]['nav']
+                      except: pass
+                if b_now > 0:
+                    bench_val += bench_shares * b_now
+            
+            # === 2. 强制换股 (使用自定义 rebalance_gap) ===
+            rebalance_sells = set()
+            
+            if enable_rebalance and (i - last_rebalance_idx >= rebalance_gap) and holdings:
+                last_rebalance_idx = i
+                
+                mom_scores_all = []
+                for code, df in self.data_map.items():
+                    if curr_date not in df.index: continue
+                    idx = df.index.get_indexer([curr_date], method='nearest')[0]
+                    if idx < MOMENTUM_WINDOW: continue
+                    past_slice = df.iloc[idx-MOMENTUM_WINDOW : idx+1]
+                    if past_slice.empty: continue
+                    start_p = past_slice['nav'].iloc[0]
+                    end_p = past_slice['nav'].iloc[-1]
+                    mom = (end_p - start_p) / start_p
+                    mom_scores_all.append({'code': code, 'mom': mom})
+                
+                if mom_scores_all:
+                    mom_scores_all.sort(key=lambda x: x['mom'], reverse=True)
+                    # 动态 cutoff
+                    top_n = min(len(mom_scores_all), TOP_N_COUNT)
+                    cutoff_val = mom_scores_all[top_n-1]['mom'] if top_n > 0 else -999
+                    
+                    for h_code in list(holdings.keys()):
+                        curr_mom = next((x['mom'] for x in mom_scores_all if x['code'] == h_code), -999)
+                        if curr_mom < cutoff_val:
+                            info = holdings[h_code]
+                            h_curr_nav = info['cost']
+                            if curr_date in self.data_map[h_code].index:
+                                h_curr_nav = self.data_map[h_code].loc[curr_date]['nav']
+                            
+                            h_hold_days = (curr_date - pd.to_datetime(info['entry_date'])).days
+                            fee_rate = 0.015 if h_hold_days < 7 else 0.0
+                            gross = info['shares'] * h_curr_nav
+                            net = gross * (1 - fee_rate)
+                            
+                            trades.append({'date': curr_date, 'action': 'REBALANCE', 'code': h_code, 'name': info['name'], 'price': h_curr_nav, 'reason': f"动能衰竭 (跌出Top50)", 'pnl': net - (info['shares'] * info['cost'])})
+                            
+                            unlock_dt = curr_date + datetime.timedelta(days=SETTLEMENT_DAYS)
+                            receivables.append({'unlock_date': unlock_dt, 'amount': net})
+                            del holdings[h_code]
+                            rebalance_sells.add(h_code)
+
+            # --- 3. 常规持仓管理 (止盈止损 + 僵尸持仓清理) ---
+            for code in list(holdings.keys()):
+                if code in rebalance_sells: continue
+                info = holdings[code]
+                df = self.data_map.get(code)
+                if df is None or curr_date not in df.index: continue
+                
+                df_slice = df.loc[:curr_date]
+                if len(df_slice) < 130: continue
+                current_nav = df_slice['nav'].iloc[-1]
+                
+                if current_nav > info['highest_nav']: holdings[code]['highest_nav'] = current_nav
+                
+                profit_pct = (current_nav - info['cost']) / info['cost']
+                hold_days = (curr_date - pd.to_datetime(info['entry_date'])).days
+                
+                action_type = None; sell_ratio = 0.0; reason = ""
+                
+                # 分批止盈 (Configurable)
+                if partial_profit_pct > 0 and profit_pct > partial_profit_pct and not info.get('partial_sold', False):
+                    action_type = "PARTIAL"; sell_ratio = 0.5; reason = f"Partial Lock (+{partial_profit_pct:.0%})"; info['partial_sold'] = True
+                
+                dd = (info['highest_nav'] - current_nav) / info['highest_nav']
+                is_trailing = dd > TRAILING_STOP_PCT and current_nav > info['cost'] * TRAILING_STOP_ACTIVATE
+                signal = WaveEngine.analyze_structure(df_slice, [])
+                struct_stop = info['stop_loss']
+                hard_stop = info['cost'] * (1 - FUND_STOP_LOSS)
+                target_stop = info['target']
+                
+                sell_str = None
+                
+                if current_nav >= target_stop and target_stop > 0: sell_str = "Target Profit Hit (Goal)"
+                elif current_nav < max(struct_stop, hard_stop): sell_str = "Structure Break"
+                elif is_trailing: sell_str = "Trailing Stop"
+                elif signal['status'] == 'Sell': sell_str = signal['desc']
+                
+                # === 新增: Dead Money Check (同步模拟盘逻辑) ===
+                if enable_dead_money_check and not sell_str:
+                    if hold_days > DEAD_MONEY_DAYS and abs(profit_pct) < DEAD_MONEY_THRESHOLD:
+                        sell_str = f"Dead Money (Hold > {DEAD_MONEY_DAYS}d, Returns < {DEAD_MONEY_THRESHOLD:.0%})"
+                
+                if sell_str: action_type = "CLEAR"; sell_ratio = 1.0; reason = sell_str
+                
+                if action_type:
+                    shares_to_sell = info['shares'] * sell_ratio
+                    gross = shares_to_sell * current_nav
+                    fee_rate = 0.015 if hold_days < 7 else 0.0
+                    net = gross * (1 - fee_rate)
+                    trades.append({
+                        'date': curr_date, 
+                        'action': 'SELL' if sell_ratio==1 else 'SELL(50%)', 
+                        'code': code, 
+                        'name': info['name'], 
+                        'price': current_nav, 
+                        'reason': f"{reason}", 
+                        'pnl': net - (shares_to_sell * info['cost'])
+                    })
+                    
+                    unlock_dt = curr_date + datetime.timedelta(days=SETTLEMENT_DAYS)
+                    receivables.append({'unlock_date': unlock_dt, 'amount': net})
+                    
+                    if action_type == "CLEAR": del holdings[code]
+                    else: info['shares'] -= shares_to_sell
+
+            # --- 4. 买入逻辑 (筛选强动能品种) ---
+            current_hold_val = 0
+            for h_code, h in holdings.items():
+                df = self.data_map.get(h_code)
+                if df is not None and curr_date in df.index:
+                    current_hold_val += h['shares'] * df.loc[curr_date]['nav']
+                elif df is not None:
+                      idx = df.index.get_indexer([curr_date], method='pad')[0]
+                      if idx != -1: current_hold_val += h['shares'] * df.iloc[idx]['nav']
+            current_equity = capital + sum([r['amount'] for r in receivables]) + current_hold_val
+
+            if len(holdings) < max_holdings and capital > 2000:
+                candidates = []
+                held_clean_names = {re.sub(r'[A-Z]$', '', h['name']) for h in holdings.values()}
+                
+                momentum_scores = []
+                for code, df in self.data_map.items():
+                    if curr_date not in df.index: continue
+                    idx = df.index.get_indexer([curr_date], method='nearest')[0]
+                    if idx < MOMENTUM_WINDOW: continue
+                    past_slice = df.iloc[idx-MOMENTUM_WINDOW : idx+1]
+                    if past_slice.empty: continue
+                    start_p = past_slice['nav'].iloc[0]
+                    end_p = past_slice['nav'].iloc[-1]
+                    mom_score = (end_p - start_p) / start_p
+                    momentum_scores.append({'code': code, 'mom': mom_score})
+                
+                # 按照120日涨幅排序 (与大屏逻辑一致)
+                momentum_scores.sort(key=lambda x: x['mom'], reverse=True)
+                # 严格对齐大屏：只看排名前 50 的强势品种
+                top_n = min(len(momentum_scores), TOP_N_COUNT)
+                whitelist_codes = {x['code'] for x in momentum_scores[:top_n]}
+                
+                for code, df in self.data_map.items():
+                    if code in holdings: continue
+                    if code not in whitelist_codes: continue 
+                    if curr_date not in df.index: continue
+                    df_slice = df.loc[:curr_date]
+                    if len(df_slice) < 130: continue
+                    sig = WaveEngine.analyze_structure(df_slice, [])
+                    if sig['status'] == 'Buy' and sig['score'] >= 80:
+                         candidates.append((code, df_slice['nav'].iloc[-1], sig))
+                
+                candidates.sort(key=lambda x: x[2]['score'], reverse=True)
+                
+                for cand in candidates:
+                    if len(holdings) >= max_holdings: break
+                    if capital < 2000: break
+                    if daily_buy_count >= max_daily_buys: break 
+                    
+                    code, price, sig = cand
+                    name = next((f['name'] for f in self.pool if f['code'] == code), code)
+                    clean_name = re.sub(r'[A-Z]$', '', name)
+                    if clean_name in held_clean_names: continue 
+                    
+                    # === 核心修改：统一仓位管理逻辑 (与模拟盘保持一致) ===
+                    target_amt = 0
+                    
+                    if sizing_model == "Kelly":
+                        # 模拟盘逻辑: 胜率55%, 赔率2.5 -> 半凯利 (Half Kelly)
+                        # f = (2.5 * 0.55 - 0.45) / 2.5 = 0.37
+                        # Half = 0.185 (18.5%)
+                        k_f = WaveEngine.calculate_kelly(0.55, 2.5) 
+                        target_amt = current_equity * (k_f * 0.5)
+                        # 激进凯利也需要封顶，避免单只爆仓
+                        target_amt = min(target_amt, current_equity * 0.30)
+                        
+                    elif sizing_model == "ATR":
+                        # 模拟盘逻辑: 2倍ATR止损，总账户风险1%
+                        atr_val = sig.get('atr', 0)
+                        if atr_val > 0:
+                            risk_per_trade = current_equity * RISK_PER_TRADE
+                            stop_loss_width = 2 * atr_val
+                            shares_to_buy = risk_per_trade / stop_loss_width
+                            target_amt = shares_to_buy * price
+                            target_amt = min(target_amt, current_equity * 0.30) # 封顶
+                        else:
+                            # ATR计算失败时回退到均衡
+                            target_amt = current_equity * (1.0 / max_holdings)
+
+                    elif sizing_model == "Fixed":
+                        # 单利模式 (固定金额)
+                        target_amt = FIXED_BET_SIZE
+                        
+                    else: 
+                        # Default: "Equal" (均衡复利滚雪球)
+                        # 动态均衡: 资金利用率高，但不如Kelly激进
+                        position_ratio = min(0.33, 2.0 / max_holdings) 
+                        target_amt = current_equity * position_ratio
+                    
+                    actual_amt = min(capital, target_amt)
+                    
+                    if actual_amt >= 100: 
+                        capital -= actual_amt
+                        shares = actual_amt / price
+                        holdings[code] = {'shares': shares, 'cost': price, 'stop_loss': sig['stop_loss'], 'target': sig['target'], 'entry_date': curr_date, 'name': name, 'highest_nav': price}
+                        trades.append({'date': curr_date, 'action': 'BUY', 'code': code, 'name': name, 'price': price, 'shares': shares, 'reason': f"{sig['desc']} ({sizing_model})"})
+                        held_clean_names.add(clean_name)
+                        daily_buy_count += 1
+            
+            if current_equity > peak_equity: peak_equity = current_equity
+            dd_pct = (current_equity - peak_equity) / peak_equity if peak_equity > 0 else 0
+            
+            equity_curve.append({
+                'date': curr_date, 
+                'val': current_equity, 
+                'bench_val': bench_val, # 添加 Benchmark 净值
+                'principal': total_principal,
+                'drawdown': dd_pct
+            })
+            drawdown_curve.append({'date': curr_date, 'val': dd_pct})
+            
+        return {'equity': equity_curve, 'drawdown': drawdown_curve, 'trades': trades}
 
 
-# === 投资组合管理器 (PortfolioManager) ===
 class PortfolioManager:
     def __init__(self):
         self.file = PAPER_TRADING_FILE
         self.data = self.load()
+        # 每次初始化时，尝试结算在途订单
         self.settle_orders()
 
     def load(self):
@@ -608,13 +1071,19 @@ class PortfolioManager:
             try:
                 with open(self.file, 'r', encoding='utf-8') as f: 
                     data = json.load(f)
+                    # 兼容性处理
                     if "pending_orders" not in data: data["pending_orders"] = []
                     for h in data.get("holdings", []):
                         if "lots" not in h or not h["lots"]:
                             h["lots"] = [{"date": "2020-01-01", "shares": h["shares"], "cost_per_share": h["cost"]}]
                     return data
             except Exception as e:
-                return {"capital": DEFAULT_CAPITAL, "holdings": [], "history": [], "pending_orders": []}
+                st.error(f"⚠️ 读取历史存档失败，已重置为初始状态。错误原因: {e}")
+                try:
+                    os.rename(self.file, self.file + ".bak")
+                    st.warning(f"已将损坏的存档备份为 {self.file}.bak")
+                except: pass
+                
         return {"capital": DEFAULT_CAPITAL, "holdings": [], "history": [], "pending_orders": []}
 
     def save(self):
@@ -627,9 +1096,10 @@ class PortfolioManager:
     def reset(self):
         self.data = {"capital": DEFAULT_CAPITAL, "holdings": [], "history": [], "pending_orders": []}
         self.save()
-        return True, "账户已重置"
+        return True, "账户已重置为初始状态"
 
     def _get_settlement_date(self, trade_dt):
+        """计算确认日期：15点前为T+1，15点后为T+2"""
         is_after_3pm = trade_dt.hour >= 15
         add_days = 2 if is_after_3pm else 1
         settle_date = trade_dt.date() + datetime.timedelta(days=add_days)
@@ -641,30 +1111,53 @@ class PortfolioManager:
         today = datetime.date.today()
         new_pending = []
         settled_count = 0
+        
         orders = self.data.get("pending_orders", [])
         if not orders: return 
 
         for order in orders:
-            try: settle_date = datetime.datetime.strptime(order['settlement_date'], "%Y-%m-%d").date()
-            except: settle_date = today
+            try:
+                settle_date = datetime.datetime.strptime(order['settlement_date'], "%Y-%m-%d").date()
+            except (ValueError, KeyError):
+                settle_date = today
 
             if today >= settle_date:
+                # 尝试获取下单日(T日)的真实收盘净值
                 real_nav = 0.0
+                correction_msg = ""
+                
                 try:
                     df_nav = DataService.fetch_nav_history(order['code'])
                     trade_date_dt = pd.to_datetime(order['date']) 
                     if not df_nav.empty and trade_date_dt in df_nav.index:
                         real_nav = float(df_nav.loc[trade_date_dt]['nav'])
-                except: pass
+                except Exception as e:
+                    pass
 
-                if real_nav > 0:
-                    order['shares'] = order['amount'] / real_nav
+                est_price = order.get('cost', order.get('price', 0.0))
+                
+                if real_nav > 0 and abs(real_nav - est_price) > 0.0001:
+                    buy_amount = order['amount']
+                    new_shares = buy_amount / real_nav
+                    correction_msg = f" | 净值修正: {est_price:.4f}->{real_nav:.4f}"
+                    order['shares'] = new_shares
                     order['cost'] = real_nav 
                     if 'price' in order: order['price'] = real_nav
 
                 self._add_to_holdings(order)
                 settled_count += 1
-                self.data['history'].append({"date": str(datetime.datetime.now())[:19], "action": "CONFIRM", "code": order['code'], "name": order['name'], "price": order.get('cost',0), "amount": 0, "reason": "份额确认", "pnl": 0})
+                
+                exec_price = order.get('cost', 0.0)
+                self.data['history'].append({
+                    "date": str(datetime.datetime.now())[:19],
+                    "action": "CONFIRM",
+                    "code": order['code'],
+                    "name": order['name'],
+                    "price": exec_price,
+                    "amount": 0,
+                    "reason": f"份额确认 (T+1){correction_msg}", 
+                    "pnl": 0
+                })
             else:
                 new_pending.append(order)
         
@@ -673,7 +1166,11 @@ class PortfolioManager:
             self.save()
             
     def _add_to_holdings(self, order):
-        code = order['code']; shares = order['shares']; price = order.get('cost', 0.0); date_str = order['date']
+        code = order['code']
+        shares = order['shares']
+        price = order.get('cost', order.get('price', 0.0))
+        date_str = order['date'] 
+        
         existing_idx = -1
         for i, h in enumerate(self.data['holdings']):
             if h['code'] == code: existing_idx = i; break
@@ -682,56 +1179,173 @@ class PortfolioManager:
         
         if existing_idx >= 0:
             existing = self.data['holdings'][existing_idx]
-            new_total_shares = existing['shares'] + shares
-            new_avg_cost = ((existing['cost'] * existing['shares']) + (shares * price)) / new_total_shares if new_total_shares > 0 else 0
-            existing['shares'] = new_total_shares; existing['cost'] = new_avg_cost; existing['lots'].append(new_lot)
+            total_shares_old = existing['shares']
+            total_cost_old = existing['cost'] * total_shares_old
+            new_total_shares = total_shares_old + shares
+            if new_total_shares > 0:
+                new_avg_cost = (total_cost_old + (shares * price)) / new_total_shares
+            else:
+                new_avg_cost = 0.0
+            existing['shares'] = new_total_shares
+            existing['cost'] = new_avg_cost
+            existing['lots'].append(new_lot)
             self.data['holdings'][existing_idx] = existing
         else:
-            self.data['holdings'].append({"code": code, "name": order['name'], "shares": shares, "cost": price, "date": date_str, "stop_loss": order.get('stop_loss', 0), "target": order.get('target', 0), "partial_sold": False, "lots": [new_lot]})
+            self.data['holdings'].append({
+                "code": code, "name": order['name'], 
+                "shares": shares, "cost": price, 
+                "date": date_str, 
+                "stop_loss": order.get('stop_loss', 0), 
+                "target": order.get('target', 0), 
+                "partial_sold": False,
+                "lots": [new_lot]
+            })
 
     def execute_buy(self, code, name, price, amount, stop_loss, target, reason):
-        if self.data['capital'] < amount: return False, "资金不足"
+        if self.data['capital'] < amount: return False, "可用资金不足"
         now = datetime.datetime.now()
         settlement_date = self._get_settlement_date(now)
         shares = amount / price
         self.data['capital'] -= amount
         
-        pending_order = {"code": code, "name": name, "shares": shares, "cost": price, "amount": amount, "date": str(now.date()), "time": now.strftime('%H:%M:%S'), "settlement_date": str(settlement_date), "stop_loss": stop_loss, "target": target}
+        pending_order = {
+            "code": code, "name": name, "shares": shares, "cost": price,
+            "amount": amount,
+            "date": str(now.date()), 
+            "time": now.strftime('%H:%M:%S'),
+            "settlement_date": str(settlement_date),
+            "stop_loss": stop_loss, "target": target
+        }
         self.data["pending_orders"].append(pending_order)
-        self.data['history'].append({"date": f"{now.date()} {now.strftime('%H:%M:%S')}", "action": "BUY_ORDER", "code": code, "name": name, "price": price, "amount": amount, "reason": f"{reason} | 预计 {settlement_date} 到账"})
+        is_after_3pm = now.hour >= 15
+        note = "次日确认" if is_after_3pm else "T+1确认"
+        self.data['history'].append({
+            "date": f"{now.date()} {now.strftime('%H:%M:%S')}", 
+            "action": "BUY_ORDER", 
+            "code": code, "name": name,
+            "price": price, "amount": amount, 
+            "reason": f"{reason} | {note} | 预计 {settlement_date} 到账"
+        })
         self.save()
-        return True, "买入申请提交"
+        return True, f"买入申请已提交，等待份额确认 ({settlement_date})"
 
     def execute_sell(self, code, price, reason, force=False):
         idx = -1
         for i, h in enumerate(self.data['holdings']):
             if h['code'] == code: idx = i; break
-        if idx == -1: return False, "未持仓"
+        
+        if idx == -1: return False, "持仓中未找到该基金"
         
         h = self.data['holdings'][idx]
-        total_revenue = h['shares'] * price
+        total_shares_to_sell = h['shares'] 
+        
+        lots = h.get('lots', [])
+        if not lots and total_shares_to_sell > 0:
+             lots = [{"date": "2020-01-01", "shares": total_shares_to_sell, "cost_per_share": h['cost']}]
+        lots.sort(key=lambda x: x['date']) 
+        
+        remaining_sell = total_shares_to_sell
+        total_revenue = 0.0
+        total_fee = 0.0
+        total_cost_basis = 0.0
+        today = datetime.date.today()
+        
+        temp_lots = [lot.copy() for lot in lots]
+        used_lots_indices = [] 
+        penalty_shares = 0 
+        
+        for i, lot in enumerate(temp_lots):
+            if remaining_sell <= 0: break
+            can_sell = min(remaining_sell, lot['shares'])
+            buy_date = datetime.datetime.strptime(lot['date'].split(' ')[0], "%Y-%m-%d").date()
+            hold_days = (today - buy_date).days
+            fee_rate = 0.015 if hold_days < 7 else 0.0
+            if fee_rate > 0: penalty_shares += can_sell
+            
+            gross_val = can_sell * price
+            fee_val = gross_val * fee_rate
+            revenue = gross_val - fee_val
+            cost_basis = can_sell * lot['cost_per_share']
+            
+            total_revenue += revenue
+            total_fee += fee_val
+            total_cost_basis += cost_basis
+            remaining_sell -= can_sell
+            
+            if can_sell == lot['shares']: used_lots_indices.append(i) 
+            else: temp_lots[i]['shares'] -= can_sell
+        
+        if penalty_shares > 0 and not force:
+             return False, f"检测到 {penalty_shares:.2f} 份持仓不足7天，将收取 1.5% 惩罚费 (约 ¥{total_fee:.2f})。请再次点击卖出确认。"
+        
         self.data['capital'] += total_revenue
-        self.data['holdings'].pop(idx)
-        self.data['history'].append({"date": f"{str(datetime.datetime.now())[:19]}", "action": "SELL", "code": code, "name": h['name'], "price": price, "amount": total_revenue, "reason": reason, "pnl": total_revenue - (h['shares']*h['cost'])})
+        new_lots = []
+        for i, lot in enumerate(temp_lots):
+            if i not in used_lots_indices: new_lots.append(lot)
+        
+        if not new_lots: self.data['holdings'].pop(idx)
+        else:
+            h['lots'] = new_lots
+            h['shares'] = sum(l['shares'] for l in new_lots)
+            total_c = sum(l['shares'] * l['cost_per_share'] for l in new_lots)
+            h['cost'] = total_c / h['shares'] if h['shares'] > 0 else 0
+            self.data['holdings'][idx] = h
+            
+        fee_note = f" (含惩罚费 ¥{total_fee:.2f})" if total_fee > 0 else ""
+        self.data['history'].append({
+            "date": f"{str(datetime.datetime.now())[:19]}", 
+            "action": "SELL", 
+            "code": code, "name": h['name'], "price": price, 
+            "amount": total_revenue, "reason": f"{reason}{fee_note} | 赎回确认", 
+            "pnl": total_revenue - total_cost_basis
+        })
         self.save()
-        return True, "卖出成功"
+        return True, f"卖出成功，资金已到账{fee_note}"
 
     def execute_deposit(self, amount, note="账户入金"):
+        if amount <= 0: return False, "金额必须大于0"
         self.data['capital'] += amount
-        self.data['history'].append({"date": str(datetime.datetime.now()), "action": "DEPOSIT", "code": "-", "name": "入金", "price": 1, "amount": amount, "reason": note, "pnl": 0})
+        now = datetime.datetime.now()
+        self.data['history'].append({
+            "date": f"{str(now.date())} {now.strftime('%H:%M:%S')}", 
+            "action": "DEPOSIT", 
+            "code": "-", "name": "银行转入", "price": 1.0, 
+            "amount": amount, "reason": f"{note} | 资金增加", "pnl": 0
+        })
         self.save()
-        return True, f"入金 {amount}"
+        return True, f"成功入金 ¥{amount:,.2f}"
     
     def check_dead_money(self):
+        """
+        检查僵尸持仓: 持有时间 > 40天 且 收益率在 +/- 3% 之间
+        """
         dead_positions = []
         today_dt = datetime.date.today()
+        
         for h in self.data['holdings']:
+            # 获取最新价格
             curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
-            first_buy = datetime.datetime.strptime(h['lots'][0]['date'].split(' ')[0], "%Y-%m-%d").date() if h.get('lots') else today_dt
+            
+            # 计算最早买入日期
+            first_buy = today_dt
+            if h.get('lots'):
+                first_date_str = h['lots'][0]['date'].split(' ')[0]
+                first_buy = datetime.datetime.strptime(first_date_str, "%Y-%m-%d").date()
+            elif 'date' in h:
+                 # 兼容旧数据
+                 first_buy = datetime.datetime.strptime(h['date'].split(' ')[0], "%Y-%m-%d").date()
+            
             held_days = (today_dt - first_buy).days
             pnl_pct = (curr_p - h['cost']) / h['cost'] if h['cost'] > 0 else 0
+            
             if held_days > DEAD_MONEY_DAYS and abs(pnl_pct) < DEAD_MONEY_THRESHOLD:
-                dead_positions.append({"code": h['code'], "name": h['name'], "days": held_days, "pnl": pnl_pct})
+                dead_positions.append({
+                    "code": h['code'],
+                    "name": h['name'],
+                    "days": held_days,
+                    "pnl": pnl_pct,
+                    "price": curr_p
+                })
         return dead_positions
 
 # === 绘图辅助 ===
@@ -740,30 +1354,57 @@ def plot_wave_chart(df, pivots, title, cost=None):
     fig.add_trace(go.Scatter(x=df.index, y=df['nav'], mode='lines', name='净值', line=dict(color='#2E86C1', width=2)))
     p_dates = [p['date'] for p in pivots]
     p_vals = [p['val'] for p in pivots]
-    fig.add_trace(go.Scatter(x=p_dates, y=p_vals, mode='lines+markers', name='波浪', line=dict(color='#E67E22', width=2)))
-    fig.add_trace(go.Bar(x=df.index, y=df['ao'], name='AO', yaxis='y2', opacity=0.3))
-    if cost: fig.add_hline(y=cost, line_dash="dash", line_color="red", annotation_text="成本")
-    fig.update_layout(title=title, height=350, margin=dict(l=0,r=0,t=30,b=0), yaxis2=dict(overlaying="y", side="right", showgrid=False))
+    fig.add_trace(go.Scatter(x=p_dates, y=p_vals, mode='lines+markers', name='波浪结构', line=dict(color='#E67E22', width=2, dash='solid')))
+    fig.add_trace(go.Scatter(x=df.index, y=df['high_20'], name='20日新高线', line=dict(color='green', width=1, dash='dot')))
+    fig.add_trace(go.Scatter(x=df.index, y=df['low_20'], name='20日新低线', line=dict(color='red', width=1, dash='dot')))
+    colors = ['green' if x >= 0 else 'red' for x in df['ao']]
+    fig.add_trace(go.Bar(x=df.index, y=df['ao'], name='AO动量', marker_color=colors, opacity=0.3, yaxis='y2'))
+    if cost: fig.add_hline(y=cost, line_dash="dash", line_color="red", annotation_text="持仓成本")
+    
+    # === 新增：斐波那契时间窗 ===
+    if len(pivots) > 0:
+        last_pivot = pivots[-1]
+        start_date = pd.to_datetime(last_pivot['date'])
+        fibo_days = [13, 21, 34, 55, 89]
+        
+        for d in fibo_days:
+            f_date = start_date + datetime.timedelta(days=d)
+            if f_date <= df.index[-1]: 
+                fig.add_vline(x=f_date, line_width=1, line_dash="dot", line_color="purple")
+                fig.add_annotation(x=f_date, y=last_pivot['val'], text=f"T+{d}", showarrow=False, yshift=10, font=dict(color="purple", size=10))
+            elif f_date <= df.index[-1] + datetime.timedelta(days=30): 
+                 fig.add_vline(x=f_date, line_width=1, line_dash="dot", line_color="purple")
+    
+    fig.update_layout(title=title, height=450, margin=dict(l=0, r=0, t=30, b=0), showlegend=True, yaxis=dict(title="净值"), yaxis2=dict(title="AO", overlaying="y", side="right", showgrid=False))
     return fig
 
-# === UI渲染 ===
+# === UI 部分 ===
 def render_dashboard():
     # 移动端CSS优化
     st.markdown("""
         <style>
         .stButton>button {width: 100%; border-radius: 8px;}
-        .stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 8px;}
+        /* 手机端字体适配 */
+        @media (max-width: 640px) {
+            h1 {font-size: 1.5rem !important;}
+            h2 {font-size: 1.25rem !important;}
+            .stMetric {padding: 5px !important;}
+        }
         </style>
     """, unsafe_allow_html=True)
 
-    if 'pm' not in st.session_state: st.session_state.pm = PortfolioManager()
-    pm = st.session_state.pm
-    pm.data = pm.load()
+    st.title("🌊 Elliott Wave OTF Trader (Pro v37.0)")
     
-    # === 侧边栏：通知配置 ===
+    if 'pm' not in st.session_state:
+        st.session_state.pm = PortfolioManager()
+    
+    pm = st.session_state.pm
+    pm.data = pm.load() 
+    
+    # === 侧边栏: 通知配置 (新增) ===
     with st.sidebar:
         st.header("📱 移动端与通知")
-        with st.expander("🔔 推送设置 (Notification)", expanded=True):
+        with st.expander("🔔 推送设置 (Notification)", expanded=False):
             notif_method = st.selectbox("推送方式", ["飞书 (Lark)", "Bark (iOS)", "邮件 (Email)"])
             
             feishu_url = st.text_input("飞书 Webhook", value=st.session_state.get('feishu_url', ''), type="password", help="群机器人 Webhook 地址")
@@ -784,97 +1425,783 @@ def render_dashboard():
                 
                 if ok: st.toast("✅ 推送成功！")
                 else: st.error(f"❌ 失败: {msg}")
-
+        
         st.divider()
-        st.caption("版本: v35.0 (Mobile)")
 
-    # === 主界面 ===
-    st.title("🌊 Elliott Wave Pro (Mobile)")
-    
-    # === 🚨 决策大屏 ===
-    st.subheader("🚨 决策中心")
+    # === 侧边栏: 原有功能 ===
+    with st.sidebar:
+        st.header("📡 机会扫描 & 设置")
+        
+        # 数据新鲜度检查
+        test_df = DataService.fetch_nav_history("000300")
+        if not test_df.empty:
+            last_date_str = str(test_df.index[-1].date())
+            today_str = str(datetime.date.today())
+            if last_date_str == today_str:
+                st.caption(f"📅 数据更新至: {last_date_str} (✅ 最新)")
+            else:
+                st.caption(f"📅 数据更新至: {last_date_str} (⏳ 昨收)")
+        
+        # 市场多维温度计
+        regime = DataService.get_market_regime()
+        st.markdown(f"### {regime['regime']}")
+        st.progress(regime['score'])
+        with st.expander("查看多维指标详情", expanded=False):
+            for d in regime['details']:
+                st.caption(d)
+        
+        # 行业轮动雷达
+        st.divider()
+        st.markdown("🧭 **行业轮动雷达 (Sector)**")
+        sector_ranks = DataService.get_sector_rankings()
+        if sector_ranks:
+            top_sector = sector_ranks[0]
+            st.success(f"🔥 领涨: **{top_sector['name']}**")
+            # 简单的迷你榜单
+            df_sec = pd.DataFrame(sector_ranks).set_index('name')
+            st.bar_chart(df_sec['mom'], height=150)
+        
+        st.divider()
+        st.markdown("🔧 **策略微调 (Strategy Tweak)**")
+        # 新增：分批止盈阈值设置
+        profit_lock_pct = st.slider("分批止盈阈值 (Partial Profit)", 0.05, 0.50, 0.15, 0.05, help="当单笔收益达到此比例时，卖出50%仓位锁定胜局。设为0.5以上约等于不止盈。")
+        alloc_pct = st.slider("固定仓位模式 (%)", 5, 50, 10, 5, help="仅当不使用 ATR 波动率定仓时生效")
+        
+        st.caption(f"当前可用资金: ¥{pm.data['capital']:,.0f}")
+        
+        now = datetime.datetime.now()
+        is_trading_day = now.weekday() < 5 
+        is_before_3pm = now.hour < 15
+        trade_status = "🟢 盘中" if (is_trading_day and is_before_3pm) else "🔴 盘后"
+        action_tip = "当日确认" if (is_trading_day and is_before_3pm) else "次日确认"
+        st.info(f"时间: {now.strftime('%H:%M')} | {trade_status} -> **{action_tip}**")
+
+        scan_mode = st.radio("扫描范围", ["精选优选池 (稳健)", "全市场Top200 (激进)"], key="scan_mode_radio")
+        
+        scan_results = []
+        if st.button("🚀 开始扫描"):
+            if "全市场" in scan_mode: pool = DataService.get_market_wide_pool()
+            else: pool = STATIC_OTF_POOL 
+                
+            if not pool: st.error("无法获取数据"); st.stop()
+            progress = st.progress(0); status_text = st.empty()
+            scan_list = pool if len(pool) < 100 else pool[:100]
+            
+            for i, fund in enumerate(scan_list):
+                status_text.text(f"Scanning {fund['name']}...")
+                progress.progress((i+1)/len(scan_list))
+                
+                # 使用智能价格获取
+                curr_price, df, _ = DataService.get_smart_price(fund['code'])
+                if df.empty: continue
+                
+                est_nav, _, _ = DataService.get_realtime_estimate(fund['code'])
+                
+                if est_nav:
+                    new_row = pd.DataFrame({'nav': [est_nav]}, index=[df.index[-1] + datetime.timedelta(days=1)])
+                    df_sim = pd.concat([df, new_row])
+                    df_sim = IndicatorEngine.calculate_indicators(df_sim)
+                else:
+                    df_sim = IndicatorEngine.calculate_indicators(df)
+                
+                pivots = WaveEngine.zig_zag(df_sim['nav'][-150:]) 
+                res = WaveEngine.analyze_structure(df_sim, pivots)
+                if res['status'] == 'Buy' and res['score'] >= 80:
+                    scan_results.append({**fund, 'price': curr_price, 'res': res})
+            
+            progress.empty(); status_text.empty()
+            scan_results.sort(key=lambda x: x['res']['score'], reverse=True)
+            if scan_results:
+                st.success(f"发现 {len(scan_results)} 个机会!")
+                st.session_state.scan_results = scan_results
+            else:
+                st.info("暂无高分信号。"); st.session_state.scan_results = []
+
+        if 'scan_results' in st.session_state and st.session_state.scan_results:
+            results_to_show = st.session_state.scan_results
+            for i, r in enumerate(results_to_show):
+                is_holding = False
+                clean_target = re.sub(r'[A-Z]$', '', r['name'])
+                duplicate_warning = ""
+                for h in pm.data['holdings']:
+                    if h['code'] == r['code']: is_holding = True
+                    clean_exist = re.sub(r'[A-Z]$', '', h['name'])
+                    if clean_exist == clean_target: duplicate_warning = " (同名持仓)"
+                
+                score = r['res']['score']
+                rank_icon = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else f"#{i+1}"))
+                
+                # === 核心逻辑: ATR 波动率定仓法 ===
+                # 假设总账户权益（本金+持仓） * 1% 作为单笔风险金
+                total_equity = pm.data['capital'] + sum([h['shares'] * h['cost'] for h in pm.data['holdings']])
+                risk_amt = total_equity * RISK_PER_TRADE
+                atr_val = r['res'].get('atr', 0)
+                
+                if atr_val > 0:
+                    # 止损距离通常设为 2倍 ATR
+                    stop_dist = 2 * atr_val
+                    # 买入数量 = 风险金 / 每股止损额
+                    shares_atr = risk_amt / stop_dist
+                    amt_atr = shares_atr * r['price']
+                    # 封顶 30% 仓位
+                    amt_atr = min(amt_atr, total_equity * 0.3)
+                else:
+                    amt_atr = 0
+                
+                amt_fixed = min(pm.data['capital'], pm.data['capital'] * (alloc_pct / 100.0))
+                
+                # Kelly Calc
+                k_f = WaveEngine.calculate_kelly(0.55, 2.5) # 假设优选池胜率55%, 盈亏比2.5
+                amt_kelly = pm.data['capital'] * (k_f * 0.5) # Half Kelly
+                amt_kelly = min(amt_kelly, pm.data['capital'] * 0.3)
+
+                with st.expander(f"{rank_icon} [{score}分] {r['name']} ({r['code']}){duplicate_warning}"):
+                    c1, c2 = st.columns([2, 1])
+                    with c1:
+                        st.markdown(f"**形态**: {r['res']['pattern']}")
+                        st.write(f"止损: {r['res']['stop_loss']:.4f} | 目标: {r['res']['target']:.4f}")
+                        if atr_val > 0:
+                            st.caption(f"ATR(14): {atr_val:.4f} | 波动定仓建议: ¥{amt_atr:,.0f}")
+                    with c2:
+                        if is_holding: st.warning("已持仓")
+                        else:
+                            # 强制使用凯利公式
+                            final_amt = amt_kelly
+                            final_amt = min(final_amt, pm.data['capital']) # 不能超现金
+                            
+                            st.metric("建议买入", f"¥{final_amt:,.0f}", help="基于半凯利公式 (Half-Kelly)")
+                            
+                            def on_buy_click(code, name, price, amount, sl, target, reason):
+                                suc, msg = st.session_state.pm.execute_buy(code, name, price, amount, sl, target, reason)
+                                if suc:
+                                    st.session_state.op_msg = f"✅ {msg}"
+                                    st.session_state.op_status = "success"
+                                else:
+                                    st.session_state.op_msg = f"❌ {msg}"
+                                    st.session_state.op_status = "error"
+                            st.button("买入", key=f"b_{r['code']}_{int(time.time())}", on_click=on_buy_click,
+                                     args=(r['code'], r['name'], r['price'], final_amt, r['res']['stop_loss'], r['res']['target'], r['res']['desc']))
+
+        if 'op_msg' in st.session_state:
+            if st.session_state.op_status == 'success': st.success(st.session_state.op_msg)
+            else: st.error(st.session_state.op_msg)
+            del st.session_state.op_msg
+
+    # === 🚨 每日决策大屏 (Daily Action Center) ===
+    st.subheader("🚨 每日决策大屏 (Action Center)")
     action_container = st.container(border=True)
+    
     with action_container:
+        # 1. 扫描持仓警报
         alerts = []
-        # 扫描持仓
+        # 使用缓存的行情数据，避免重复请求
         for h in pm.data['holdings']:
             curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
+            
+            # 止损/止盈检查
             if h.get('stop_loss', 0) > 0 and curr_p < h['stop_loss']:
-                alerts.append(f"🔴 **止损**: {h['name']} (现价{curr_p:.4f} < 止损{h['stop_loss']:.4f})")
+                alerts.append(f"🔴 **止损触发**: {h['name']} (现价 {curr_p:.4f} < 止损 {h['stop_loss']:.4f})")
             elif h.get('target', 0) > 0 and curr_p >= h['target']:
-                alerts.append(f"🟢 **止盈**: {h['name']} (现价{curr_p:.4f} >= 目标{h['target']:.4f})")
-        
-        # 市场环境
+                alerts.append(f"🟢 **止盈触发**: {h['name']} (现价 {curr_p:.4f} >= 目标 {h['target']:.4f})")
+            
+            # 移动止损检查
+            if curr_p > h.get('highest_nav', 0): h['highest_nav'] = curr_p
+            dd = (h.get('highest_nav', h['cost']) - curr_p) / h.get('highest_nav', h['cost'])
+            if dd > TRAILING_STOP_PCT and curr_p > h['cost'] * TRAILING_STOP_ACTIVATE:
+                alerts.append(f"🟠 **移动止损**: {h['name']} (高点回撤 {dd:.1%})")
+
+        # 2. 僵尸持仓检查 (Dead Money)
+        dead_positions = pm.check_dead_money()
+        for d in dead_positions:
+            alerts.append(f"🧟 **僵尸持仓**: {d['name']} (持有 {d['days']}天, 收益 {d['pnl']:.2%}) -> 建议换股")
+
+        # 3. 市场环境
         regime = DataService.get_market_regime()
-        if regime['score'] <= 0.2: alerts.insert(0, "🛡️ **极寒**: 建议空仓防御")
+        if regime['score'] <= 0.2:
+            alerts.insert(0, "🛡️ **市场极寒**: 建议谨慎开仓 (当前处于防御区间)")
         
         if alerts:
             for a in alerts: st.markdown(a)
-            # 一键推送按钮
-            if st.button("📱 推送报警到手机", type="primary", use_container_width=True):
+            # 新增：一键推送按钮
+            if st.button("📱 一键推送到手机", type="primary", use_container_width=True):
                 content = "\n".join(alerts)
                 ok, msg = False, ""
                 if notif_method == "飞书 (Lark)": ok, msg = NotificationService.send_feishu(feishu_url, "持仓预警", content)
                 elif notif_method == "Bark (iOS)": ok, msg = NotificationService.send_bark(bark_key, "持仓预警", content)
+                elif notif_method == "邮件 (Email)": ok, msg = NotificationService.send_email({'host':email_host,'port':email_port,'user':email_user,'pass':email_pass,'receiver':email_recv}, "持仓预警", content)
                 
                 if ok: st.success("✅ 已推送")
                 else: st.error(f"推送失败: {msg}")
         else:
-            st.success("✅ 持仓状态健康，无触发信号")
+            st.success("✅ 今日无紧急操作，持仓状态良好。")
 
-    # === 资产概览 ===
-    st.divider()
-    total_val = pm.data['capital'] + sum([h['shares']*DataService.get_smart_price(h['code'], h['cost'])[0] for h in pm.data['holdings']])
-    c1, c2, c3 = st.columns(3)
-    c1.metric("总资产", f"¥{total_val:,.0f}")
-    c2.metric("可用现金", f"¥{pm.data['capital']:,.0f}")
-    c3.metric("持仓市值", f"¥{(total_val - pm.data['capital']):,.0f}")
-
-    # === 标签页 ===
-    tab1, tab2, tab3 = st.tabs(["🔍 持仓诊断", "💼 交易台", "📊 扫描"])
+    # === 主界面 ===
+    tab1, tab2, tab3 = st.tabs(["🔍 我的持仓诊断", "💼 模拟交易台 (Pro)", "📊 策略回测"])
     
     with tab1:
-        if not pm.data['holdings']: st.info("空仓中")
-        for h in pm.data['holdings']:
-            curr_p, df, _ = DataService.get_smart_price(h['code'], h['cost'])
-            pnl = (curr_p - h['cost']) * h['shares']
-            pnl_pct = (curr_p - h['cost']) / h['cost']
+        st.subheader("🏥 持仓深度波浪诊断")
+        if st.button("刷新诊断"): st.rerun()
+        for i, item in enumerate(USER_PORTFOLIO_CONFIG):
+            # 使用智能价格获取
+            curr_price, df, used_est = DataService.get_smart_price(item['code'], item['cost'])
             
-            with st.expander(f"{h['name']} | {pnl_pct:+.2%}", expanded=False):
-                st.write(f"代码: {h['code']} | 成本: {h['cost']:.4f} | 现价: {curr_p:.4f}")
-                if st.button(f"卖出 {h['name']}", key=f"sell_{h['code']}"):
-                    pm.execute_sell(h['code'], curr_p, "手动卖出", force=True)
-                    st.rerun()
-                if not df.empty:
-                    df = IndicatorEngine.calculate_indicators(df)
-                    pivots = WaveEngine.zig_zag(df['nav'][-100:])
-                    fig = plot_wave_chart(df.iloc[-60:], pivots, "Trend", h['cost'])
-                    st.plotly_chart(fig, use_container_width=True)
+            # 如果使用了实时估值，需要模拟一行数据给指标引擎
+            if used_est and not df.empty:
+                new_row = pd.DataFrame({'nav': [curr_price]}, index=[df.index[-1] + datetime.timedelta(days=1)])
+                df_calc = pd.concat([df, new_row])
+            else: df_calc = df
+                
+            df_calc = IndicatorEngine.calculate_indicators(df_calc)
+            pivots = WaveEngine.zig_zag(df_calc['nav'][-150:]) 
+            res = WaveEngine.analyze_structure(df_calc, pivots)
+            
+            shares = item['hold']
+            market_value = shares * curr_price
+            pnl = (curr_price - item['cost']) * shares
+            pnl_pct = (curr_price - item['cost']) / item['cost']
+            
+            est_tag = " (实时)" if used_est else ""
+            advice_color = "red" if res['status'] == 'Buy' else ("green" if res['status'] == 'Sell' else "grey")
+            with st.expander(f"{item['name']} | 盈亏: {pnl:+.2f} ({pnl_pct:.2%}) | 建议: {res['status']}", expanded=True):
+                c1, c2, c3 = st.columns([1, 1, 2])
+                with c1:
+                    st.metric(f"最新估值{est_tag}", f"{curr_price:.4f}")
+                    st.metric("持仓成本", f"{item['cost']:.4f}")
+                with c2:
+                    st.metric("持仓市值", f"¥{market_value:,.2f}")
+                    st.markdown(f"**评分**: {res['score']}")
+                with c3:
+                    st.markdown(f"### 建议: :{advice_color}[{res['status']}]")
+                    st.write(f"**分析**: {res['desc']}")
+                fig = plot_wave_chart(df_calc.iloc[-120:], pivots, f"{item['name']} 结构图", cost=item['cost'])
+                st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        with st.form("buy_form"):
-            code = st.text_input("代码", "005827")
-            name = st.text_input("名称", "易方达蓝筹")
-            price = st.number_input("价格", 1.0)
-            amt = st.number_input("金额", 1000.0)
-            if st.form_submit_button("买入"):
-                pm.execute_buy(code, name, price, amt, 0, 0, "手动")
-                st.rerun()
+        st.header("💼 模拟交易台")
+        pm.settle_orders() # 处理 T+1
+        holdings = pm.data.get('holdings', [])
+        pending = pm.data.get('pending_orders', [])
+        history = pm.data.get('history', [])
+
+        # === 🔥 1. 实时风险监控 ===
+        st.subheader("1. 实时风险监控 (Risk Monitor)")
+        monitor_container = st.container()
+        sell_alerts = []
+        now_str = datetime.datetime.now().strftime("%H:%M:%S")
         
-        st.subheader("流水")
-        st.dataframe(pd.DataFrame(pm.data['history']).iloc[::-1], use_container_width=True)
+        if holdings:
+            with st.spinner(f"正在扫描 {len(holdings)} 个持仓的实时风险..."):
+                for h in holdings:
+                    # 使用智能价格获取
+                    curr_price, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
+                    
+                    if not df.empty:
+                        if used_est:
+                            new_row = pd.DataFrame({'nav': [curr_price]}, index=[df.index[-1] + datetime.timedelta(days=1)])
+                            df_calc = pd.concat([df, new_row])
+                        else: df_calc = df
+                        
+                        df_calc = IndicatorEngine.calculate_indicators(df_calc)
+                        pivots = WaveEngine.zig_zag(df_calc['nav'][-150:]) 
+                        res = WaveEngine.analyze_structure(df_calc, pivots)
+                        
+                        triggers = []
+                        struct_stop = h.get('stop_loss', 0)
+                        if struct_stop > 0 and curr_price < struct_stop: triggers.append(f"跌破结构 (现价{curr_price:.4f} < 止损{struct_stop:.4f})")
+                        hard_stop_price = h['cost'] * (1 - FUND_STOP_LOSS)
+                        if curr_price < hard_stop_price: triggers.append(f"触及硬止损 (亏损 > {FUND_STOP_LOSS:.1%})")
+                        if curr_price > h.get('highest_nav', 0): h['highest_nav'] = curr_price
+                        dd = (h.get('highest_nav', h['cost']) - curr_price) / h.get('highest_nav', h['cost'])
+                        if dd > TRAILING_STOP_PCT and curr_price > h['cost'] * TRAILING_STOP_ACTIVATE: triggers.append(f"移动止损触发 (高点回撤 {dd:.2%})")
+                        if res['status'] == 'Sell': triggers.append(f"波浪卖点: {res['desc']}")
+                        
+                        if triggers:
+                            sell_alerts.append({"code": h['code'], "name": h['name'], "price": curr_price, "reasons": triggers, "time": now_str})
+
+        with monitor_container:
+            if not sell_alerts: st.success(f"✅ 持仓风险扫描安全 ({now_str})", icon="🛡️")
+            else:
+                st.error(f"🚨 警报：发现 {len(sell_alerts)} 个持仓触发卖出条件！", icon="⚠️")
+                for alert in sell_alerts:
+                    with st.expander(f"🔴 {alert['name']} ({alert['code']}) - 建议立即卖出!", expanded=True):
+                        c_a, c_b = st.columns([3, 1])
+                        with c_a:
+                            st.markdown(f"**触发时间**: {alert['time']}")
+                            st.markdown(f"**触发价格**: {alert['price']:.4f}")
+                            for r in alert['reasons']: st.markdown(f"- 💥 **{r}**")
+                        with c_b:
+                            if st.button("一键清仓", key=f"alert_sell_{alert['code']}"):
+                                suc, msg = pm.execute_sell(alert['code'], alert['price'], f"雷达触发: {','.join(alert['reasons'])}", force=True)
+                                if suc: st.success("已提交卖出！"); time.sleep(1); st.rerun()
+
+        # === 🔥 2. 组合健康度透视 (Correlation & Momentum) ===
+        st.subheader("2. 组合健康度透视 (Portfolio Health)")
+        
+        col_health_1, col_health_2 = st.columns(2)
+        
+        with col_health_1:
+            with st.expander("🔥 持仓相关性热力图 (避雷针)", expanded=False):
+                st.info("💡 检查是否存在“假分散”。如果您买了5只基金，但颜色都是深红色（相关性>0.9），说明风险极度集中！")
+                if st.button("生成热力图"):
+                    if len(holdings) < 2:
+                        st.warning("持仓少于2只，无法计算相关性。")
+                    else:
+                        with st.spinner("正在下载历史数据计算相关性..."):
+                            df_corr_list = []
+                            for h in holdings:
+                                df_tmp = DataService.fetch_nav_history(h['code'])
+                                if not df_tmp.empty:
+                                    # 截取最近1年数据
+                                    df_tmp = df_tmp.iloc[-250:]
+                                    s_pct = df_tmp['nav'].pct_change()
+                                    s_pct.name = h['name']
+                                    df_corr_list.append(s_pct)
+                            
+                            if df_corr_list:
+                                df_corr_all = pd.concat(df_corr_list, axis=1).dropna()
+                                corr_matrix = df_corr_all.corr()
+                                
+                                fig_corr = go.Figure(data=go.Heatmap(
+                                    z=corr_matrix.values,
+                                    x=corr_matrix.columns,
+                                    y=corr_matrix.index,
+                                    colorscale='RdBu_r', # 红=正相关，蓝=负相关
+                                    zmin=-1, zmax=1
+                                ))
+                                fig_corr.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0))
+                                st.plotly_chart(fig_corr, use_container_width=True)
+                            else:
+                                st.error("数据不足")
+
+        with col_health_2:
+            with st.expander("🩺 动能体检 (优胜劣汰)", expanded=False):
+                st.info("💡 比较持仓与全市场的120日涨幅。落在左侧红色区域的持仓是“拖油瓶”，建议更换。")
+                if st.button("开始体检"):
+                    if not holdings:
+                        st.warning("暂无持仓。")
+                    else:
+                        progress_doc = st.progress(0, text="计算市场基准...")
+                        pool = DataService.get_market_wide_pool() if "全市场" in scan_mode else STATIC_OTF_POOL
+                        market_moms = []
+                        # 抽样计算
+                        sample_pool = pool[:50]
+                        for idx, fund in enumerate(sample_pool):
+                            df = DataService.fetch_nav_history(fund['code'])
+                            if len(df) > 120:
+                                p_now = df['nav'].iloc[-1]; p_old = df['nav'].iloc[-120]
+                                market_moms.append((p_now - p_old)/p_old)
+                            progress_doc.progress((idx+1)/len(sample_pool) * 0.5)
+
+                        if market_moms:
+                            market_moms.sort(reverse=True)
+                            top_30_cutoff = market_moms[int(len(market_moms)*0.3)]
+                            
+                            fig = go.Figure()
+                            fig.add_trace(go.Histogram(x=market_moms, name='市场分布', nbinsx=20, marker_color='#90CAF9', opacity=0.6))
+                            
+                            for idx, h in enumerate(holdings):
+                                df = DataService.fetch_nav_history(h['code'])
+                                mom = -999
+                                if len(df) > 120:
+                                    p_now = df['nav'].iloc[-1]; p_old = df['nav'].iloc[-120]
+                                    mom = (p_now - p_old)/p_old
+                                
+                                line_color = '#FF5252' if mom < top_30_cutoff else '#00E676'
+                                fig.add_vline(x=mom, line_width=2, line_dash="solid", line_color=line_color)
+                                y_pos = 2 + (idx % 3) * 1.5 
+                                fig.add_annotation(x=mom, y=y_pos, text=h['name'][:4], showarrow=True, arrowhead=1, ax=20, ay=-20)
+                                progress_doc.progress(0.5 + (idx+1)/len(holdings) * 0.5)
+                            
+                            fig.add_vline(x=top_30_cutoff, line_width=2, line_dash="dash", line_color="orange", annotation_text="Top 30%")
+                            fig.update_layout(title="持仓 vs 市场动能", xaxis_title="120日涨幅", yaxis_title="数量", showlegend=False, height=400, margin=dict(l=0, r=0, t=30, b=0))
+                            progress_doc.empty()
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.error("数据不足")
+
+        st.divider()
+        
+        # === 顶部资产数据卡片: 价格修正 ===
+        total_hold_val = 0
+        for h in holdings:
+            curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
+            total_hold_val += h['shares'] * curr_p
+
+        pending_val = sum([p['amount'] for p in pending])
+        total_assets = pm.data['capital'] + total_hold_val + pending_val
+        
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("💰 总权益", f"¥{total_assets:,.2f}")
+        k2.metric("💵 可用现金", f"¥{pm.data['capital']:,.2f}")
+        k3.metric("📈 持仓市值", f"¥{total_hold_val:,.2f}")
+        k4.metric("⏳ 在途/冻结", f"¥{pending_val:,.2f}")
+        st.divider()
+
+        c_left, c_right = st.columns([1, 2])
+        with c_left:
+            st.subheader("📊 资产状态")
+            hold_vals = []
+            for h in holdings:
+                curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
+                hold_vals.append(h['shares'] * curr_p)
+
+            labels = ['现金', '在途'] + [h['name'] for h in holdings]
+            values = [pm.data['capital'], pending_val] + hold_vals
+            plot_data = [(l, v) for l, v in zip(labels, values) if v > 0]
+            if plot_data:
+                fig_pie = go.Figure(data=[go.Pie(labels=[x[0] for x in plot_data], values=[x[1] for x in plot_data], hole=.4)])
+                fig_pie.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250, showlegend=False)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            
+            with st.expander("💰 资金划转 (入金/出金)", expanded=False):
+                d_col1, d_col2 = st.columns([2, 1])
+                deposit_amt = d_col1.number_input("金额", min_value=0.0, step=1000.0, value=2000.0, label_visibility="collapsed")
+                if d_col2.button("充值", use_container_width=True):
+                    suc, msg = pm.execute_deposit(deposit_amt, "工资定投")
+                    if suc: st.toast(msg, icon="💰"); time.sleep(1); st.rerun()
+
+            with st.expander("🛠 手动下单", expanded=False):
+                 with st.form("manual_trade"):
+                    mc = st.text_input("基金代码", placeholder="005827")
+                    mn = st.text_input("基金名称", placeholder="易方达蓝筹")
+                    mp = st.number_input("参考净值", min_value=0.01, format="%.4f")
+                    ma = st.number_input("买入金额", min_value=100.0, step=1000.0)
+                    if st.form_submit_button("买入申请"):
+                        suc, msg = pm.execute_buy(mc, mn, mp, ma, 0, 0, "手动买入")
+                        if suc: st.success(msg); time.sleep(1); st.rerun()
+                        else: st.error(msg)
+            
+            st.markdown("---")
+            if st.button("🔴 重置账户 / 清空缓存"):
+                pm.reset()
+                st.rerun()
+
+        with c_right:
+            if pending:
+                st.info("⏳ 待确认份额 (Pending)")
+                st.dataframe(pd.DataFrame(pending)[['name', 'code', 'amount', 'settlement_date']], use_container_width=True, hide_index=True)
+                st.divider()
+
+            st.subheader("📋 持仓管理 (Holdings)")
+            if not holdings: st.caption("暂无持仓")
+            else:
+                for h in holdings:
+                    # 使用智能价格获取
+                    curr_price, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
+                    
+                    can_add = False; add_reason = ""
+                    res = {'status': 'Unknown', 'desc': '', 'score': 0}
+                    
+                    if not df.empty:
+                        if used_est:
+                            new_row = pd.DataFrame({'nav': [curr_price]}, index=[df.index[-1] + datetime.timedelta(days=1)])
+                            df_calc = pd.concat([df, new_row])
+                        else: df_calc = df
+                        df_calc = IndicatorEngine.calculate_indicators(df_calc)
+                        pivots = WaveEngine.zig_zag(df_calc['nav'][-150:]) 
+                        res = WaveEngine.analyze_structure(df_calc, pivots)
+                        pnl_pct = (curr_price - h['cost']) / h['cost']
+                        if pnl_pct > 0.03 and res['status'] == 'Buy' and res['score'] >= 80:
+                            can_add = True; add_reason = f"浮盈安全垫({pnl_pct:.1%}) + 趋势延续({res['pattern']})"
+
+                    mkt_val = h['shares'] * curr_price
+                    pnl_val = mkt_val - (h['shares'] * h['cost'])
+                    pnl_pct = (curr_price - h['cost']) / h['cost'] if h['cost'] > 0 else 0
+                    
+                    lots = h.get('lots', [])
+                    penalty_shares = 0
+                    today_dt = datetime.date.today()
+                    for lot in lots:
+                        l_date = datetime.datetime.strptime(lot['date'].split(' ')[0], "%Y-%m-%d").date()
+                        if (today_dt - l_date).days < 7: penalty_shares += lot['shares']
+                    
+                    with st.container():
+                        c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+                        c1.markdown(f"**{h['name']}**")
+                        c1.caption(f"{h['code']} | 批次: {len(lots)}")
+                        if can_add: c1.success(f"🔥 适合加仓: {add_reason}", icon="📈")
+                        if penalty_shares > 0: c1.warning(f"⚠️ {penalty_shares:.0f}份不满7天", icon="⏳")
+                        c2.metric("持仓市值", f"¥{mkt_val:,.0f}")
+                        c3.metric("浮动盈亏", f"{pnl_val:+.0f}", f"{pnl_pct:.2%}")
+                        with c4:
+                            col_add, col_sell = st.columns(2)
+                            add_amt_sugg = total_assets * 0.10
+                            add_amt = min(pm.data['capital'], add_amt_sugg)
+                            if col_add.button("➕ 加仓", key=f"add_{h['code']}", help=f"建议加仓 ¥{add_amt:.0f} (半个单位)"):
+                                if pm.data['capital'] < 100: st.error("现金不足！")
+                                else:
+                                    suc, msg = pm.execute_buy(h['code'], h['name'], curr_price, add_amt, res.get('stop_loss', 0), res.get('target', 0), f"浮盈加仓 (+{pnl_pct:.1%})")
+                                    if suc: st.toast(f"✅ 加仓申请已提交！¥{add_amt:.0f}"); time.sleep(1); st.rerun()
+                                    else: st.error(msg)
+                            if col_sell.button("卖出", key=f"sell_{h['code']}"):
+                                suc, msg = pm.execute_sell(h['code'], curr_price, "手动卖出", force=True)
+                                if suc: st.success(msg); time.sleep(1); st.rerun()
+                                else: st.warning(msg)
+                        
+                        # === 波浪结构分析图 ===
+                        with st.expander(f"📉 {h['name']} 走势与结构分析"):
+                            if not df.empty:
+                                fig = plot_wave_chart(df_calc.iloc[-120:], pivots, f"{h['name']} 结构图", cost=h['cost'])
+                                st.plotly_chart(fig, use_container_width=True)
+                                st.info(f"波浪分析: {res['desc']}")
+                            else:
+                                st.warning("数据不足，无法绘图")
+
+                        st.markdown("---")
+        
+        st.subheader("📜 交易流水")
+        if history:
+            df_hist = pd.DataFrame(history).iloc[::-1]
+            st.dataframe(df_hist, height=300, use_container_width=True)
+            # 导出功能
+            csv = df_hist.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 导出流水 (Excel/CSV)", data=csv, file_name=f"trade_history_{datetime.date.today()}.csv", mime="text/csv")
 
     with tab3:
-        if st.button("🚀 扫描全市场 Top20"):
-            pool = DataService.get_market_wide_pool()[:20]
-            for f in pool:
-                df = DataService.fetch_nav_history(f['code'])
-                if len(df) > 50:
-                    df = IndicatorEngine.calculate_indicators(df)
-                    pivots = WaveEngine.zig_zag(df['nav'][-100:])
-                    res = WaveEngine.analyze_structure(df, pivots)
-                    if res['status'] == 'Buy':
-                        st.success(f"{f['name']}: {res['desc']}")
+        st.header("📊 策略时光机 & 压力测试")
+        mode = st.radio("选择回测模式", ["单只基金 (压力测试)", "时光机 (组合回测)", "⚔️ 策略 PK (控制变量法)", "📅 择时分析 (入场点全景图)"], horizontal=True)
+        col_d1, col_d2 = st.columns(2)
+        start_d = col_d1.date_input("开始日期", datetime.date(2022, 1, 1))
+        end_d = col_d2.date_input("结束日期", datetime.date.today())
+
+        if "PK" in mode:
+            st.subheader("⚔️ 策略竞技场")
+            pk_type = st.radio("⚔️ 你想对比什么？", 
+                             ["🅰️ 数量限制 PK: 【宽分散(Max=10)】 vs 【强集中(Max=3)】", 
+                              "🅱️ 资金模式 PK: 【复利滚雪球】 vs 【单利固定金额】"])
+            
+            # === 核心修改: 使用函数获取池子 ===
+            pool_choice = st.radio("📡 选择回测股票池", 
+                        ["🧪 科学严谨池 (各行业龙头+宽基)", 
+                         "🎯 激进扫描池 (今日全市场Top)"],
+                        key="pool_choice_pk")
+
+            if st.button("🔥 开始对决"):
+                status_box = st.status("正在安排对决...", expanded=True)
+                
+                # 调用统一函数
+                pool = get_pool_by_strategy(pool_choice)
+                
+                pbt = PortfolioBacktester(pool, str(start_d), str(end_d))
+                pbt.preload_data()
+                res_A = {}; res_B = {}
+                label_A = ""; label_B = ""
+                
+                if "数量限制" in pk_type:
+                    label_A = "红方: 宽分散 (Max=10)"; status_box.write(f"正在运行 {label_A}...")
+                    res_A = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=999, max_holdings=10, enable_rebalance=True, partial_profit_pct=profit_lock_pct, sizing_model="Kelly")
+                    label_B = "蓝方: 强集中 (Max=3)"; status_box.write(f"正在运行 {label_B}...")
+                    res_B = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=3, max_holdings=3, enable_rebalance=True, partial_profit_pct=profit_lock_pct, sizing_model="Kelly")
+                    
+                elif "资金模式" in pk_type:
+                    label_A = "红方: 复利 (Kelly)"; status_box.write(f"正在运行 {label_A}...")
+                    res_A = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=3, max_holdings=MAX_POSITIONS_DEFAULT, enable_rebalance=True, partial_profit_pct=profit_lock_pct, sizing_model="Kelly")
+                    label_B = "蓝方: 单利 (Fixed)"; status_box.write(f"正在运行 {label_B}...")
+                    res_B = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=3, max_holdings=MAX_POSITIONS_DEFAULT, enable_rebalance=True, partial_profit_pct=profit_lock_pct, sizing_model="Fixed")
+
+                status_box.update(label="对决完成", state="complete", expanded=False)
+                
+                # 绘图逻辑
+                data_dict = {}
+                if res_A.get('equity'): data_dict[label_A] = pd.DataFrame(res_A['equity']).set_index('date')['val']
+                if res_B.get('equity'): data_dict[label_B] = pd.DataFrame(res_B['equity']).set_index('date')['val']
+                
+                if data_dict:
+                    df_compare = pd.DataFrame(data_dict)
+                    st.subheader("📈 资金曲线对比"); st.line_chart(df_compare)
+                    
+                    # 汇总表
+                    stats = []
+                    for lbl, res in zip([label_A, label_B], [res_A, res_B]):
+                        if not res: continue
+                        eq = pd.DataFrame(res['equity'])
+                        tr = pd.DataFrame(res['trades'])
+                        dd = pd.DataFrame(res['drawdown'])
+                        ret = (eq['val'].iloc[-1] / DEFAULT_CAPITAL) - 1
+                        mdd = dd['val'].min()
+                        win = len(tr[tr['pnl']>0]) / len(tr) if not tr.empty else 0
+                        stats.append({"策略": lbl, "总收益": f"{ret:.2%}", "最大回撤": f"{mdd:.2%}", "胜率": f"{win:.1%}", "交易数": len(tr)})
+                    
+                    st.dataframe(pd.DataFrame(stats), use_container_width=True)
+
+        elif "择时分析" in mode:
+            st.markdown("<div style='background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin-bottom: 20px;'><strong>ℹ️ 功能说明：平行宇宙测试</strong><br>此模式将模拟从过去几年的<strong>不同日期</strong>入场，一直持有到今天。</div>", unsafe_allow_html=True)
+            col_t1, col_t2 = st.columns(2)
+            step_days = col_t1.slider("采样间隔 (天)", 7, 60, 15)
+            max_daily = col_t2.slider("策略限制 (每日买入上限)", 1, 10, 3)
+            
+            c_s1, c_s2 = st.columns(2)
+            enable_deposit = c_s1.checkbox("包含每月定投 (+2000)", value=False)
+            
+            deposit_amt = 2000 if enable_deposit else 0
+            
+            # === 核心修改: 使用函数获取池子 ===
+            pool_choice = st.radio("📡 选择回测股票池", 
+                                ["🧪 科学严谨池 (各行业龙头+宽基)", 
+                                    "🎯 激进扫描池 (今日全市场Top)"],
+                                key="pool_choice_timing")
+            
+            if st.button("🚀 开始全景计算"):
+                # 调用统一函数
+                pool = get_pool_by_strategy(pool_choice)
+
+                pbt = PortfolioBacktester(pool, str(start_d), str(end_d))
+                with st.status("正在初始化时光机...", expanded=True) as status:
+                    status.write("正在预加载全市场数据 (Parallel Preloading)...")
+                    pbt.preload_data()
+                    start_dt = pd.to_datetime(start_d); end_dt = pd.to_datetime(end_d)
+                    test_points = []; curr = start_dt
+                    while curr < end_dt - datetime.timedelta(days=90): test_points.append(curr); curr += datetime.timedelta(days=step_days)
+                    
+                    if not test_points: status.update(label="错误：时间范围太短", state="error"); st.error("选择的时间范围太短，无法生成足够的采样点。"); st.stop()
+                    
+                    results = []
+                    progress_bar = st.progress(0)
+                    status.write(f"即将模拟 {len(test_points)} 个平行宇宙...")
+                    
+                    for i, test_start in enumerate(test_points):
+                        pct = (i + 1) / len(test_points); progress_bar.progress(pct, text=f"正在模拟入场: {test_start.date()} ({i+1}/{len(test_points)})")
+                        
+                        # 修正: 默认换股周期改为 60天 (稳健)
+                        res = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=max_daily, monthly_deposit=deposit_amt, override_start_date=test_start, enable_rebalance=True, rebalance_gap=60, partial_profit_pct=profit_lock_pct, sizing_model="Kelly")
+                        
+                        if "equity" in res and res['equity']:
+                            df_eq = pd.DataFrame(res['equity']); df_tr = pd.DataFrame(res['trades']); df_dd = pd.DataFrame(res['drawdown'])
+                            if not df_eq.empty:
+                                final_val = df_eq['val'].iloc[-1]; final_principal = df_eq['principal'].iloc[-1]
+                                total_ret = (final_val - final_principal) / final_principal if final_principal > 0 else 0
+                                max_dd = df_dd['val'].min()
+                                win_rate = len(df_tr[df_tr['pnl']>0]) / len(df_tr) if not df_tr.empty else 0
+                                results.append({"入场日期": test_start, "持有至今收益率": total_ret, "经历最大回撤": max_dd, "交易胜率": win_rate})
+                    
+                    progress_bar.empty(); status.update(label="全景计算完成！", state="complete", expanded=False)
+                
+                if results:
+                    df_res = pd.DataFrame(results).set_index("入场日期")
+                    st.success(f"✅ 模拟完成！共测试了 {len(results)} 个不同的入场时机。")
+                    
+                    st.subheader("1. 收益率全景 (Yield Curve)"); st.line_chart(df_res['持有至今收益率'])
+                    c1, c2 = st.columns(2)
+                    with c1: st.subheader("2. 风险分布 (Drawdown)"); st.area_chart(df_res['经历最大回撤'], color="#FF5252")
+                    with c2: st.subheader("3. 胜率稳定性 (Win Rate)"); st.line_chart(df_res['交易胜率'], color="#00E676")
+                    
+                    with st.expander("查看详细数据表"): st.dataframe(df_res.style.format("{:.2%}"), use_container_width=True)
+
+        elif "单只基金" in mode:
+            code = st.text_input("代码", "005827")
+            if st.button("回测"):
+                bt = RealBacktester(code, str(start_d), str(end_d)); res = bt.run(partial_profit_pct=profit_lock_pct)
+                if "equity" in res: st.line_chart(pd.DataFrame(res['equity']).set_index('date')['val']); st.dataframe(pd.DataFrame(res['trades']))
+
+        else:
+            # 普通时光机模式
+            col_s1, col_s2 = st.columns(2)
+            monthly_add = col_s1.slider("💰 每月工资定投 (0为不开启)", 0, 10000, 2000, step=1000)
+            
+            # === 锁定: Kelly 模式 ===
+            col_s2.markdown("⚖️ **仓位模型**: :orange[凯利公式 (Kelly Criterion)]")
+            run_sizing_mode = "Kelly"
+            
+            use_rebal = col_s2.checkbox("开启强制换股 (汰弱留强)", value=True) 
+            
+            # === 核心修改: 增加池子选择 ===
+            pool_choice = st.radio("📡 选择回测股票池", 
+                                ["🧪 科学严谨池 (各行业龙头+宽基, 避免幸存者偏差)", 
+                                    "🎯 激进扫描池 (今日全市场Top, 仅验证上限)"],
+                                key="pool_choice_simple") # Added key
+            
+            if st.button("🚀 启动模拟"):
+                # 调用统一函数
+                pool = get_pool_by_strategy(pool_choice)
+
+                pbt = PortfolioBacktester(pool, str(start_d), str(end_d)); pbt.preload_data()
+                res = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=3, monthly_deposit=monthly_add, enable_rebalance=use_rebal, partial_profit_pct=profit_lock_pct, sizing_model=run_sizing_mode)
+                
+                if "equity" in res and res['equity']:
+                    df = pd.DataFrame(res['equity'])
+                    final_val = df['val'].iloc[-1]; final_principal = df['principal'].iloc[-1]
+                    total_ret = (final_val - final_principal) / final_principal if final_principal > 0 else 0
+                    
+                    # === 增加 Sharpe & 年化 ===
+                    df['pct_change'] = df['val'].pct_change()
+                    sharpe = (df['pct_change'].mean() / df['pct_change'].std()) * np.sqrt(252) if df['pct_change'].std() != 0 else 0
+                    annual_ret = (total_ret + 1) ** (252 / len(df)) - 1 if len(df) > 0 else 0
+                    
+                    # === 计算 Alpha (vs HS300) ===
+                    alpha_val = 0
+                    if 'bench_val' in df.columns:
+                        bench_ret = (df['bench_val'].iloc[-1] - df['bench_val'].iloc[0]) / df['bench_val'].iloc[0] if df['bench_val'].iloc[0] > 0 else 0
+                        alpha_val = total_ret - bench_ret
+                    
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("总资产", f"¥{final_val:,.0f}")
+                    c2.metric("累计本金", f"¥{final_principal:,.0f}")
+                    c3.metric("总收益率", f"{total_ret:.2%}")
+                    c4.metric("最大回撤", f"{pd.DataFrame(res['drawdown'])['val'].min():.2%}")
+                    
+                    c5, c6, c7 = st.columns(3)
+                    c5.metric("📈 年化收益 (CAGR)", f"{annual_ret:.2%}")
+                    c6.metric("⚖️ 夏普比率 (Sharpe)", f"{sharpe:.2f}")
+                    c7.metric("🦁 超额收益 (Alpha)", f"{alpha_val:.2%}", help="策略收益 - 沪深300同期收益")
+                    
+                    # === 1. 月度收益热力图 (Heatmap) ===
+                    st.subheader("📅 月度收益热力图 (Monthly Heatmap)")
+                    df['year'] = df['date'].dt.year
+                    df['month'] = df['date'].dt.month
+                    # 计算每月收益
+                    # 修正的月度收益计算
+                    df_monthly = df.set_index('date').resample('M')['val'].last().pct_change().reset_index()
+                    df_monthly['year'] = df_monthly['date'].dt.year
+                    df_monthly['month'] = df_monthly['date'].dt.month
+                    pivot_table = df_monthly.pivot(index='year', columns='month', values='val')
+                    
+                    fig_heat = go.Figure(data=go.Heatmap(
+                        z=pivot_table.values,
+                        x=[f"{i}月" for i in range(1, 13)],
+                        y=pivot_table.index,
+                        colorscale='RdYlGn', 
+                        zmid=0,
+                        text=np.around(pivot_table.values * 100, 1),
+                        texttemplate="%{text}%"
+                    ))
+                    fig_heat.update_layout(height=400, margin=dict(t=0, l=0, r=0, b=0))
+                    st.plotly_chart(fig_heat, use_container_width=True)
+
+                    # === 2. 潜水图 (Underwater Plot) ===
+                    c_uw1, c_uw2 = st.columns(2)
+                    with c_uw1:
+                        st.subheader("🌊 潜水图 (回撤深度 & 时长)")
+                        df_dd = pd.DataFrame(res['drawdown']).set_index('date')
+                        fig_dd = go.Figure()
+                        fig_dd.add_trace(go.Scatter(x=df_dd.index, y=df_dd['val'], fill='tozeroy', line=dict(color='red', width=1)))
+                        fig_dd.update_yaxes(title="回撤幅度", tickformat='.1%')
+                        fig_dd.update_layout(height=350, margin=dict(t=0, l=0, r=0, b=0), showlegend=False)
+                        st.plotly_chart(fig_dd, use_container_width=True)
+                    
+                    # === 3. 盈亏分布 (PnL Distribution) ===
+                    with c_uw2:
+                        st.subheader("📊 盈亏分布直方图")
+                        trades_df = pd.DataFrame(res['trades'])
+                        if not trades_df.empty:
+                            # 估算每笔交易收益率
+                            trades_pnl = trades_df[trades_df['pnl'] != 0]['pnl']
+                            fig_hist = go.Figure(data=[go.Histogram(x=trades_pnl, nbinsx=30, marker_color='#42A5F5')])
+                            fig_hist.update_layout(height=350, margin=dict(t=0, l=0, r=0, b=0), xaxis_title="单笔盈亏金额")
+                            st.plotly_chart(fig_hist, use_container_width=True)
+
+                    st.subheader("📈 策略表现 vs 市场基准 (Alpha)"); 
+                    chart_cols = {'val': '我的策略', 'principal': '本金投入'}
+                    if 'bench_val' in df.columns: chart_cols['bench_val'] = '沪深300基准'
+                    chart_df = df.set_index('date')[list(chart_cols.keys())].rename(columns=chart_cols)
+                    st.line_chart(chart_df, color=["#2962FF", "#BDBDBD", "#FFAB40"])
+                    
+                    st.subheader("📜 交易记录")
+                    df_trades = pd.DataFrame(res['trades']).sort_values(by='date', ascending=False)
+                    st.dataframe(df_trades, use_container_width=True, hide_index=True)
+                    
+                    # 导出回测记录
+                    csv_bt = df_trades.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button("📥 导出回测记录 (CSV)", data=csv_bt, file_name="backtest_trades.csv", mime="text/csv")
 
 if __name__ == "__main__":
     render_dashboard()
