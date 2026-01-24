@@ -1,0 +1,233 @@
+{
+  "capital": 10628.82,
+  "holdings": [
+    {
+      "code": "021876",
+      "name": "\u8def\u535a\u8fc8\u8d44\u6e90\u7cbe\u9009\u80a1\u7968\u53d1\u8d77C",
+      "shares": 962.65,
+      "cost": 2.0776,
+      "date": "2026-01-21",
+      "stop_loss": 1.7509,
+      "target": 2.7191,
+      "partial_sold": false,
+      "lots": [
+        {
+          "date": "2026-01-21",
+          "shares": 962.65,
+          "cost_per_share": 2.0776
+        }
+      ],
+      "highest_nav": 2.0776
+    },
+    {
+      "code": "019889",
+      "name": "\u4e2d\u6b27\u5468\u671f\u4f18\u9009\u6df7\u5408\u53d1\u8d77C",
+      "shares": 788.85,
+      "cost": 2.2818,
+      "date": "2026-01-21",
+      "stop_loss": 1.9644,
+      "target": 2.935,
+      "partial_sold": false,
+      "lots": [
+        {
+          "date": "2026-01-21",
+          "shares": 788.85,
+          "cost_per_share": 2.2818
+        }
+      ],
+      "highest_nav": 2.2818
+    },
+    {
+      "code": "014497",
+      "name": "\u8bfa\u5b89\u7814\u7a76\u4f18\u9009\u6df7\u5408C",
+      "shares": 1001.69,
+      "cost": 1.5973,
+      "date": "2026-01-21",
+      "stop_loss": 1.3064,
+      "target": 2.0328,
+      "partial_sold": false,
+      "lots": [
+        {
+          "date": "2026-01-21",
+          "shares": 1001.69,
+          "cost_per_share": 1.5973
+        }
+      ],
+      "highest_nav": 1.5973
+    },
+    {
+      "code": "005776",
+      "name": "\u4e2d\u52a0\u8f6c\u578b\u52a8\u529b\u6df7\u5408C",
+      "shares": 292.51850811548263,
+      "cost": 4.9843,
+      "date": "2026-01-22",
+      "stop_loss": 4.7141,
+      "target": 6.544850000000001,
+      "partial_sold": false,
+      "lots": [
+        {
+          "date": "2026-01-22",
+          "shares": 292.51850811548263,
+          "cost_per_share": 4.9843
+        }
+      ]
+    },
+    {
+      "code": "001184",
+      "name": "\u6613\u65b9\u8fbe\u65b0\u5e38\u6001\u7075\u6d3b\u914d\u7f6e\u6df7\u5408",
+      "shares": 1060.7922392886014,
+      "cost": 1.237,
+      "date": "2026-01-22",
+      "stop_loss": 1.159,
+      "target": 1.6064100000000001,
+      "partial_sold": false,
+      "lots": [
+        {
+          "date": "2026-01-22",
+          "shares": 1060.7922392886014,
+          "cost_per_share": 1.237
+        }
+      ]
+    },
+    {
+      "code": "519771",
+      "name": "\u4ea4\u94f6\u4f18\u62e9\u56de\u62a5\u7075\u6d3b\u914d\u7f6e\u6df7\u5408C",
+      "shares": 324.8287812525786,
+      "cost": 3.6357,
+      "date": "2026-01-22",
+      "stop_loss": 3.4285,
+      "target": 4.7645,
+      "partial_sold": false,
+      "lots": [
+        {
+          "date": "2026-01-22",
+          "shares": 324.8287812525786,
+          "cost_per_share": 3.6357
+        }
+      ]
+    }
+  ],
+  "history": [
+    {
+      "date": "2026-01-21 14:00:21",
+      "action": "BUY_ORDER",
+      "code": "021876",
+      "name": "\u8def\u535a\u8fc8\u8d44\u6e90\u7cbe\u9009\u80a1\u7968\u53d1\u8d77C",
+      "price": 2.0776,
+      "amount": 2000.0,
+      "reason": "\u7a81\u783420\u65e5\u65b0\u9ad8+\u52a8\u80fd\u786e\u8ba4 (\u6d6a3\u7279\u5f81) | T+1\u786e\u8ba4 | \u9884\u8ba1 2026-01-22 \u5230\u8d26",
+      "pnl": 0
+    },
+    {
+      "date": "2026-01-21 14:00:26",
+      "action": "BUY_ORDER",
+      "code": "019889",
+      "name": "\u4e2d\u6b27\u5468\u671f\u4f18\u9009\u6df7\u5408\u53d1\u8d77C",
+      "price": 2.2818,
+      "amount": 1800.0,
+      "reason": "\u7a81\u783420\u65e5\u65b0\u9ad8+\u52a8\u80fd\u786e\u8ba4 (\u6d6a3\u7279\u5f81) | T+1\u786e\u8ba4 | \u9884\u8ba1 2026-01-22 \u5230\u8d26",
+      "pnl": 0
+    },
+    {
+      "date": "2026-01-21 14:00:29",
+      "action": "BUY_ORDER",
+      "code": "014497",
+      "name": "\u8bfa\u5b89\u7814\u7a76\u4f18\u9009\u6df7\u5408C",
+      "price": 1.5973,
+      "amount": 1600.0,
+      "reason": "\u7a81\u783420\u65e5\u65b0\u9ad8+\u52a8\u80fd\u786e\u8ba4 (\u6d6a3\u7279\u5f81) | T+1\u786e\u8ba4 | \u9884\u8ba1 2026-01-22 \u5230\u8d26",
+      "pnl": 0
+    },
+    {
+      "date": "2026-01-22 18:18:44",
+      "action": "CONFIRM",
+      "code": "021876",
+      "name": "\u8def\u535a\u8fc8\u8d44\u6e90\u7cbe\u9009\u80a1\u7968\u53d1\u8d77C",
+      "price": 2.0776,
+      "amount": 0,
+      "reason": "\u4efd\u989d\u786e\u8ba4\u5230\u8d26 (T+1)",
+      "pnl": 0
+    },
+    {
+      "date": "2026-01-22 18:18:44",
+      "action": "CONFIRM",
+      "code": "019889",
+      "name": "\u4e2d\u6b27\u5468\u671f\u4f18\u9009\u6df7\u5408\u53d1\u8d77C",
+      "price": 2.2818,
+      "amount": 0,
+      "reason": "\u4efd\u989d\u786e\u8ba4\u5230\u8d26 (T+1)",
+      "pnl": 0
+    },
+    {
+      "date": "2026-01-22 18:18:44",
+      "action": "CONFIRM",
+      "code": "014497",
+      "name": "\u8bfa\u5b89\u7814\u7a76\u4f18\u9009\u6df7\u5408C",
+      "price": 1.5973,
+      "amount": 0,
+      "reason": "\u4efd\u989d\u786e\u8ba4\u5230\u8d26 (T+1)",
+      "pnl": 0
+    },
+    {
+      "date": "2026-01-22 14:16:56",
+      "action": "BUY_ORDER",
+      "code": "005776",
+      "name": "\u4e2d\u52a0\u8f6c\u578b\u52a8\u529b\u6df7\u5408C",
+      "price": 5.0345,
+      "amount": 1458.0,
+      "reason": "\u7a81\u783420\u65e5\u65b0\u9ad8+\u52a8\u80fd\u786e\u8ba4 (\u6d6a3\u7279\u5f81) | T+1\u786e\u8ba4 | \u9884\u8ba1 2026-01-23 \u5230\u8d26",
+      "pnl": 0
+    },
+    {
+      "date": "2026-01-22 14:17:03",
+      "action": "BUY_ORDER",
+      "code": "001184",
+      "name": "\u6613\u65b9\u8fbe\u65b0\u5e38\u6001\u7075\u6d3b\u914d\u7f6e\u6df7\u5408",
+      "price": 1.2357,
+      "amount": 1312.2,
+      "reason": "\u7a81\u783420\u65e5\u65b0\u9ad8+\u52a8\u80fd\u786e\u8ba4 (\u6d6a3\u7279\u5f81) | T+1\u786e\u8ba4 | \u9884\u8ba1 2026-01-23 \u5230\u8d26",
+      "pnl": 0
+    },
+    {
+      "date": "2026-01-22 14:17:08",
+      "action": "BUY_ORDER",
+      "code": "519771",
+      "name": "\u4ea4\u94f6\u4f18\u62e9\u56de\u62a5\u7075\u6d3b\u914d\u7f6e\u6df7\u5408C",
+      "price": 3.665,
+      "amount": 1180.98,
+      "reason": "\u7a81\u783420\u65e5\u65b0\u9ad8+\u52a8\u80fd\u786e\u8ba4 (\u6d6a3\u7279\u5f81) | T+1\u786e\u8ba4 | \u9884\u8ba1 2026-01-23 \u5230\u8d26",
+      "pnl": 0
+    },
+    {
+      "date": "2026-01-23 00:00:38",
+      "action": "CONFIRM",
+      "code": "005776",
+      "name": "\u4e2d\u52a0\u8f6c\u578b\u52a8\u529b\u6df7\u5408C",
+      "price": 4.9843,
+      "amount": 0,
+      "reason": "\u4efd\u989d\u786e\u8ba4 (T+1) | \u51c0\u503c\u4fee\u6b63: 5.0345->4.9843",
+      "pnl": 0
+    },
+    {
+      "date": "2026-01-23 00:00:39",
+      "action": "CONFIRM",
+      "code": "001184",
+      "name": "\u6613\u65b9\u8fbe\u65b0\u5e38\u6001\u7075\u6d3b\u914d\u7f6e\u6df7\u5408",
+      "price": 1.237,
+      "amount": 0,
+      "reason": "\u4efd\u989d\u786e\u8ba4 (T+1) | \u51c0\u503c\u4fee\u6b63: 1.2357->1.2370",
+      "pnl": 0
+    },
+    {
+      "date": "2026-01-23 00:00:40",
+      "action": "CONFIRM",
+      "code": "519771",
+      "name": "\u4ea4\u94f6\u4f18\u62e9\u56de\u62a5\u7075\u6d3b\u914d\u7f6e\u6df7\u5408C",
+      "price": 3.6357,
+      "amount": 0,
+      "reason": "\u4efd\u989d\u786e\u8ba4 (T+1) | \u51c0\u503c\u4fee\u6b63: 3.6650->3.6357",
+      "pnl": 0
+    }
+  ],
+  "pending_orders": []
+}

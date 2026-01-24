@@ -1,0 +1,712 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import akshare as ak
+from scipy.signal import argrelextrema
+import datetime
+import time
+import concurrent.futures
+import json
+import os
+import re
+import requests # 新增：用于直连东方财富接口
+
+# === 配置页面 ===
+st.set_page_config(layout="wide", page_title="波浪理论实战指挥官 (v9.6 极速直连版)")
+
+# === 模拟盘数据文件路径 ===
+PAPER_TRADING_FILE = "paper_trading_data.json"
+
+# === 用户持仓数据 ===
+MY_PORTFOLIO = [
+    {"code":"025942","name":"广发新动力混合C","tags":["自选"],"cost":2.2752,"hold":829.58, "hold_7d": 0},
+    {"code":"004260","name":"德邦稳盈增长灵活配置混合A","tags":["自选"],"cost":1.2839,"hold":3884.19, "hold_7d": 3841.4},
+    {"code":"011630","name":"东财有色增强A","tags":["自选"],"cost":2.4796,"hold":2772.07, "hold_7d": 2405.4},
+    {"code":"002207","name":"前海开源金银珠宝混合C","tags":["自选"],"cost":2.8347,"hold":1648.5, "hold_7d": 525.39},
+    {"code":"019924","name":"华泰柏瑞中证2000指数增强C","tags":["自选"],"cost":1.8628,"hold":209.22, "hold_7d": 0},
+    {"code":"014855","name":"嘉实中证半导体指数增强发起式C","tags":["自选"],"cost":2.2366,"hold":917.59, "hold_7d": 0},
+    {"code":"012620","name":"嘉实中证软件服务ETF联接C","tags":["自选"],"cost":0.9037,"hold":4454.87, "hold_7d": 2745.44},
+    {"code":"019917","name":"富国医药创新股票C","tags":["自选"],"cost":1.8284,"hold":558.54, "hold_7d": 0},
+    {"code":"018301","name":"华夏消费电子ETF联接C","tags":["自选"],"cost":1.7396,"hold":1000,"hold_7d": 1000},
+    {"code":"025857","name":"华夏中证电网设备主题ETF发起式联接C","tags":["自选"],"cost":1.2605,"hold":3000,"hold_7d": 3000},
+    {"code":"010956","name":"天弘中证智能汽车指数发起式C","tags":["自选"],"cost":1.1928,"hold":2000,"hold_7d": 2000}
+]
+
+# === 静态精选池 ===
+STATIC_POOL = [
+    {"code": "000300", "name": "华夏沪深300ETF联接A", "type": "宽基-大盘"},
+    {"code": "000688", "name": "易方达科创50ETF联接A", "type": "宽基-科创"},
+    {"code": "012414", "name": "招商中证白酒指数C", "type": "消费-白酒"},
+    {"code": "001618", "name": "天弘中证电子ETF联接C", "type": "科技-电子"},
+    {"code": "010358", "name": "易方达中证人工智能ETF联接C", "type": "科技-AI"},
+    {"code": "006479", "name": "广发纳斯达克100ETF联接A", "type": "美股-科技"},
+]
+
+# === 核心分析类 (V9.6 增强版) ===
+class ElliottWaveAnalyzer:
+    def __init__(self):
+        pass
+
+    @st.cache_data(ttl=3600)
+    def get_hot_funds(_self):
+        """爬取全市场热门基金"""
+        try:
+            df = ak.fund_open_fund_rank_em(symbol="股票型")
+            df = df.head(150)
+            hot_list = []
+            seen_names = set()
+            for _, row in df.iterrows():
+                name = row['基金简称']
+                if any(x in name for x in ["定开", "持有", "封闭", "养老", "FOF", "定期", "后端"]): continue
+                base_name = re.sub(r'[A-C]$', '', name)
+                if base_name in seen_names: continue
+                seen_names.add(base_name)
+                
+                hot_list.append({
+                    "code": str(row['基金代码']),
+                    "name": name,
+                    "type": "Top热榜"
+                })
+                if len(hot_list) >= 80: break 
+            return hot_list
+        except: return STATIC_POOL
+
+    def fetch_single_estimation(self, code):
+        """
+        [V9.6 新增] 直连东方财富核心估值接口
+        URL: https://fundgz.1234567.com.cn/js/{code}.js?rt={ts}
+        """
+        try:
+            ts = int(time.time() * 1000)
+            url = f"http://fundgz.1234567.com.cn/js/{code}.js"
+            params = {"rt": ts}
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Referer": "http://fund.eastmoney.com/"
+            }
+            # 1.5秒超时保护
+            resp = requests.get(url, params=params, headers=headers, timeout=1.5)
+            
+            if resp.status_code == 200 and resp.text.startswith("jsonpgz("):
+                # 解析 JSONP: jsonpgz({...});
+                content = resp.text[8:-2] 
+                data = json.loads(content)
+                # 字段: fundcode, name, jzrq(净值日期), dwjz(单位净值), gsz(估算值), gszzl(估算涨幅), gztime(估值时间)
+                return {
+                    'code': data['fundcode'],
+                    'est_nav': float(data['gsz']),
+                    'est_pct': float(data['gszzl']),
+                    'time': data['gztime']
+                }
+        except Exception:
+            pass
+        return None
+
+    @st.cache_data(ttl=30) # 30秒缓存，保证极速刷新
+    def get_batch_estimations(_self, codes_list):
+        """
+        [V9.6 新增] 并发获取指定列表的实时估值
+        """
+        results = {}
+        # 线程数不宜过多，避免被封，20个并发通常安全
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            future_to_code = {executor.submit(_self.fetch_single_estimation, code): code for code in codes_list}
+            for future in concurrent.futures.as_completed(future_to_code):
+                data = future.result()
+                if data:
+                    results[data['code']] = data
+        return results
+
+    @st.cache_data(ttl=1800) 
+    def fetch_data(_self, fund_code, start_date='20190101', period='daily'): 
+        try:
+            try:
+                df = ak.fund_open_fund_info_em(symbol=fund_code, indicator="单位净值走势")
+            except: return pd.DataFrame()
+            
+            df = df.rename(columns={"净值日期": "date", "单位净值": "nav", "日增长率": "change"})
+            df['date'] = pd.to_datetime(df['date'])
+            df['nav'] = df['nav'].astype(float)
+            df = df.sort_values('date')
+            
+            if period == 'weekly':
+                df.set_index('date', inplace=True)
+                df = df.resample('W').last().dropna().reset_index()
+
+            mask = (df['date'] >= pd.to_datetime(start_date))
+            df = df.loc[mask].reset_index(drop=True)
+            return df
+        except: return pd.DataFrame()
+
+    def merge_realtime_data(self, df, realtime_info):
+        """数据融合引擎"""
+        if df.empty or not realtime_info: return df, False
+        
+        last_date = df.iloc[-1]['date']
+        est_nav = realtime_info.get('est_nav', 0)
+        
+        if est_nav <= 0: return df, False
+        today = pd.Timestamp(datetime.date.today())
+        
+        # 简单判断：如果历史数据不是今天的，就把今天的估值接上去
+        if last_date < today:
+            new_row = pd.DataFrame([{
+                'date': today,
+                'nav': est_nav,
+                'change': realtime_info.get('est_pct', 0)
+            }])
+            df_merged = pd.concat([df, new_row], ignore_index=True)
+            return df_merged, True
+            
+        return df, False
+
+    def calculate_indicators(self, df):
+        if df.empty: return df
+        exp1 = df['nav'].ewm(span=12, adjust=False).mean()
+        exp2 = df['nav'].ewm(span=26, adjust=False).mean()
+        df['macd'] = exp1 - exp2
+        df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+        df['tr'] = df['nav'].diff().abs()
+        df['atr'] = df['tr'].rolling(window=14).mean()
+        return df
+
+    def find_pivots(self, df, order=10): 
+        if df.empty: return []
+        highs_idx = argrelextrema(df['nav'].values, np.greater, order=order)[0]
+        lows_idx = argrelextrema(df['nav'].values, np.less, order=order)[0]
+        pivots = []
+        for idx in highs_idx: pivots.append({'date': df.iloc[idx]['date'], 'nav': df.iloc[idx]['nav'], 'type': 'high', 'index': idx, 'macd': df.iloc[idx]['macd']})
+        for idx in lows_idx: pivots.append({'date': df.iloc[idx]['date'], 'nav': df.iloc[idx]['nav'], 'type': 'low', 'index': idx, 'macd': df.iloc[idx]['macd']})
+        pivots.sort(key=lambda x: x['index'])
+        if not pivots: return []
+        clean = [pivots[0]]
+        for curr in pivots[1:]:
+            if curr['type'] != clean[-1]['type']: clean.append(curr)
+        return clean
+
+    def validate_impulse_wave(self, pivots):
+        if len(pivots) < 6: return False, "点数不足", {}
+        check_seq = pivots[-6:]
+        if not (check_seq[0]['type'] == 'low' and check_seq[5]['type'] == 'high'): return False, "非上升5浪", {}
+        v = [p['nav'] for p in check_seq]
+        if v[2] <= v[0]: return False, "违规:2浪破底", {}
+        if (v[3]-v[2] <= v[1]-v[0]) and (v[3]-v[2] <= v[5]-v[4]): return False, "违规:3浪最短", {}
+        if v[4] <= v[1]: return False, "违规:4浪重叠", {}
+        return True, "标准5浪推动", {check_seq[i]['index']: str(i) for i in range(6)}
+
+    def identify_wave_structure(self, pivots):
+        is_valid, msg, labels = self.validate_impulse_wave(pivots)
+        if is_valid: return msg, labels
+        if len(pivots) >= 4:
+            p = pivots[-4:]
+            if p[0]['type'] == 'low' and p[1]['type'] == 'high' and p[2]['type'] == 'low' and p[3]['type'] == 'high':
+                if p[2]['nav'] > p[0]['nav'] and p[3]['nav'] > p[1]['nav']:
+                    return "疑似浪3主升", {p[0]['index']:"1起", p[1]['index']:"1顶", p[2]['index']:"2底", p[3]['index']:"3顶"}
+        return "调整/震荡", {}
+
+    def calculate_time_windows(self, pivots):
+        if len(pivots) < 3: return []
+        last_pivot = pivots[-1]
+        prev_pivot = pivots[-2]
+        wave_duration_days = (last_pivot['date'] - prev_pivot['date']).days
+        if wave_duration_days <= 0: return []
+        ratios = [0.618, 1.0, 1.618]
+        projected_dates = []
+        for r in ratios:
+            delta = int(wave_duration_days * r)
+            target_date = last_pivot['date'] + datetime.timedelta(days=delta)
+            if target_date >= datetime.datetime.now(): 
+                projected_dates.append((f"{r}倍", target_date.strftime('%Y-%m-%d')))
+        return projected_dates
+
+    def analyze_dynamic_status(self, df, pivots, cost, total_holding, new_holding_7d, realtime_info=None, total_capital=100000, risk_per_trade=2.0):
+        """
+        全能分析函数
+        """
+        def return_defaults(status="数据不足", color="gray", reason="无法判断", instr="无操作"):
+            return status, color, reason, {}, 0, instr, 0, 0, [], 0, 0, 0, {"target": 0, "desc": "无数据", "low": 0, "high": 0}
+
+        old_holding = total_holding - new_holding_7d
+        if old_holding < 0: old_holding = 0
+        if not pivots or len(pivots) < 4: return return_defaults()
+
+        last_nav = df.iloc[-1]['nav']
+        current_price = last_nav
+        est_pct = 0 
+        
+        # 实时数据已在 df 中融合，这里仅用于UI显示
+        if realtime_info and realtime_info.get('est_nav') > 0:
+            est_pct = realtime_info['est_pct']
+        
+        last_pivot = pivots[-1]
+        atr = df.iloc[-1]['atr'] if not pd.isna(df.iloc[-1]['atr']) else last_nav * 0.015
+        
+        recent_data = df.iloc[last_pivot['index']:]
+        running_high = max(recent_data['nav'].max(), current_price) if last_pivot['type'] == 'low' else recent_data['nav'].max()
+        if last_pivot['type'] == 'high': running_high = pivots[-2]['nav'] 
+
+        wave_height = running_high - last_pivot['nav'] if last_pivot['type'] == 'low' else 0
+        fib_levels = {}
+        if wave_height > 0:
+             fib_levels = {
+                "High": running_high,
+                "0.236": running_high - wave_height * 0.236,
+                "0.382": running_high - wave_height * 0.382,
+                "0.500": running_high - wave_height * 0.500,
+                "0.618": running_high - wave_height * 0.618,
+                "Low": last_pivot['nav']
+            }
+        
+        plan_stop_loss = fib_levels.get('0.618', 0)
+        buy_limit = fib_levels.get('0.618', 0)
+        buy_stop = running_high * 1.01 
+        
+        risk_amount = total_capital * (risk_per_trade / 100)
+        stop_dist = (current_price - (plan_stop_loss - atr)) 
+        suggested_shares = 0
+        if stop_dist > 0: suggested_shares = risk_amount / stop_dist
+
+        instruction = "观望"
+        reason = ""
+        status = "分析中"
+        color = "gray"
+        is_holding = total_holding > 0
+
+        # === 指令生成器 ===
+        def generate_instruction(target_percent, risk_to_next_support=0, is_emergency=False):
+            target_sell_amount = total_holding * target_percent
+            sell_old = min(target_sell_amount, old_holding)
+            needed_from_new = target_sell_amount - sell_old
+            sell_new = 0
+            prefix = "🚨 紧急卖出" if is_emergency else "卖出"
+            if needed_from_new > 0:
+                fee_rate = 0.015
+                risk_delta = risk_to_next_support - fee_rate
+                if target_percent >= 0.99: 
+                    if risk_delta > 0 or is_emergency: sell_new = needed_from_new
+                    else: sell_new = 0
+                else: 
+                    if risk_delta > 0.005: sell_new = needed_from_new
+                    else: sell_new = 0
+            
+            total_sell = sell_old + sell_new
+            if total_sell == 0: return "锁仓持有 (卖出不划算)", "red"
+            return f"{prefix} {total_sell:.2f} 份", "red" if is_emergency else "orange"
+
+        # === 预测逻辑 ===
+        forecast = {"target": 0, "desc": "震荡", "low": 0, "high": 0}
+        
+        # === 分析逻辑 ===
+        if last_pivot['type'] == 'high': # 下跌中
+             status, color = "下跌趋势", "red"
+             risk = max((current_price - pivots[-2]['nav'] * 0.9) / current_price, 0.03)
+             if is_holding:
+                 instruction, color = generate_instruction(1.0, risk)
+             else: instruction = "观望"
+             reason = "ZigZag高点确立，主跌浪风险"
+             forecast["target"] = current_price - atr; forecast["desc"] = "弱势探底"
+
+        elif last_pivot['type'] == 'low': # 上升/回调
+            current_retracement = (running_high - current_price) / wave_height if wave_height > 0 else 0
+            
+            prev_high_macd = -999
+            current_macd = df.iloc[-1]['macd']
+            for p in reversed(pivots):
+                if p['type']=='high': prev_high_macd=p['macd']; break
+            
+            if current_price >= running_high * 0.98: # 突破
+                 if current_price > pivots[-2]['nav'] and df.iloc[-1]['macd'] < prev_high_macd:
+                     status, color = "浪5背离", "orange"
+                     if is_holding: instruction, color = generate_instruction(0.5, 0)
+                     else: instruction = "观望"
+                     reason = "MACD顶背离"
+                     forecast["target"] = current_price - atr; forecast["desc"] = "高位遇阻"
+                 else:
+                     status, color = "浪3主升", "blue"
+                     instruction = "持有 / 追涨"
+                     reason = f"强势突破，上方空间打开"
+                     forecast["target"] = current_price + atr; forecast["desc"] = "惯性上冲"
+            
+            elif current_retracement < 0.236:
+                status, color = "强势整理", "blue"
+                instruction = "持有"
+                reason = "空中加油"
+                forecast["target"] = current_price + 0.5 * atr; forecast["desc"] = "高位横盘"
+            
+            elif 0.236 <= current_retracement < 0.382:
+                status, color = "正常回调", "blue"
+                instruction = "分批买入"
+                reason = "良性洗盘"
+                forecast["target"] = fib_levels['0.382']; forecast["desc"] = "支撑测试"
+            
+            elif 0.382 <= current_retracement < 0.618:
+                status, color = "深度回调", "orange"
+                instruction = f"挂单 {fib_levels['0.618']:.4f}"
+                if is_holding:
+                    risk = (current_price - fib_levels['0.618']) / current_price
+                    instruction, color = generate_instruction(0.3, risk)
+                reason = "关注0.618支撑"
+                forecast["target"] = fib_levels['0.618']; forecast["desc"] = "寻找底部"
+            
+            else: # 跌破 0.618
+                status, color = "趋势破坏", "red"
+                risk = (current_price - fib_levels['Low']) / current_price
+                if is_holding: instruction, color = generate_instruction(1.0, risk)
+                else: instruction = "不宜介入"
+                reason = "有效跌破0.618"
+                forecast["target"] = current_price - atr; forecast["desc"] = "加速下跌"
+        
+        forecast["high"] = current_price + atr; forecast["low"] = current_price - atr
+
+        # 熔断检查
+        if realtime_info and current_price < plan_stop_loss and is_holding:
+            status = "⚠️ 触发熔断"
+            risk_now = (current_price - fib_levels.get('Low', 0)) / current_price
+            instruction, color = generate_instruction(1.0, risk_now, is_emergency=True)
+            reason = f"实时估值击穿止损线 {plan_stop_loss:.4f}"
+
+        return status, color, reason, fib_levels, running_high, instruction, buy_limit, buy_stop, [], suggested_shares, current_price, est_pct, forecast
+
+    def run_backtest(self, df, pivots):
+        wins, losses = 0, 0
+        for i in range(2, len(pivots)-1):
+            p3, p2, p1 = pivots[i], pivots[i-1], pivots[i-2]
+            if not (p1['type']=='low' and p2['type']=='high' and p3['type']=='low'): continue
+            if p3['nav'] <= p1['nav']: continue 
+            wave_h = p2['nav'] - p1['nav']
+            retracement = (p2['nav'] - p3['nav']) / wave_h
+            if 0.3 <= retracement <= 0.7:
+                target = p3['nav'] + wave_h * 1.5
+                stop = p1['nav']
+                future = df[df['date'] > p3['date']]
+                outcome = "HOLD"
+                for _, r in future.iterrows():
+                    if r['nav'] <= stop: outcome="LOSS"; break
+                    elif r['nav'] >= target: outcome="WIN"; break
+                if outcome=="WIN": wins+=1
+                elif outcome=="LOSS": losses+=1
+                elif not future.empty and future.iloc[-1]['nav'] > p3['nav']: wins+=1
+        total = wins + losses
+        win_rate = (wins / total * 100) if total > 0 else 0
+        return {"win_rate": win_rate, "count": total}
+
+# === 模拟盘系统 ===
+class PaperTradingSystem:
+    def __init__(self, init_cash=100000):
+        self.data = self._load_data(init_cash)
+        
+    def _load_data(self, init_cash):
+        if os.path.exists(PAPER_TRADING_FILE):
+            try:
+                with open(PAPER_TRADING_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except: pass
+        return {"cash": init_cash, "init_capital": init_cash, "holdings": {}, "history": [], "equity_curve": []}
+
+    def _save_data(self):
+        with open(PAPER_TRADING_FILE, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=4)
+
+    def get_total_assets(self, rt_map=None):
+        asset = self.data['cash']
+        for code, info in self.data['holdings'].items():
+            price = info['cost']
+            if rt_map and code in rt_map: price = rt_map[code]['est_nav']
+            asset += price * info['shares']
+        return asset
+
+    def execute_buy(self, code, name, price, amount):
+        if self.data['cash'] < amount: return False, "资金不足"
+        fee = amount * 0.0015
+        shares = (amount - fee) / price
+        if code in self.data['holdings']:
+            h = self.data['holdings'][code]
+            h['cost'] = (h['cost'] * h['shares'] + amount) / (h['shares'] + shares)
+            h['shares'] += shares
+        else:
+            self.data['holdings'][code] = {"name": name, "cost": price, "shares": shares, "max_price": price}
+        self.data['cash'] -= amount
+        self._save_data()
+        return True, f"买入 {name} {amount:.0f}元"
+
+    def execute_sell(self, code, price, shares, reason=""):
+        if code not in self.data['holdings']: return False, "未持仓"
+        h = self.data['holdings'][code]
+        amount = shares * price * (1 - 0.005)
+        self.data['cash'] += amount
+        h['shares'] -= shares
+        if h['shares'] < 1: del self.data['holdings'][code]
+        self._save_data()
+        return True, f"卖出 {h['name']} ({reason})"
+
+    def run_auto_pilot(self, analyzer, rt_map, risk_per_trade=2.0):
+        logs = []
+        scan_logs = [] 
+        
+        # 1. 卖出逻辑
+        codes = list(self.data['holdings'].keys())
+        for code in codes:
+            info = self.data['holdings'][code]
+            df = analyzer.fetch_data(code)
+            rt_info = rt_map.get(code)
+            df_merged, _ = analyzer.merge_realtime_data(df, rt_info)
+            df_final = analyzer.calculate_indicators(df_merged)
+            
+            if not df_final.empty:
+                pivots = analyzer.find_pivots(df_final, order=10)
+                res = analyzer.analyze_dynamic_status(df_final, pivots, info['cost'], info['shares'], 0, total_capital=self.get_total_assets(rt_map))
+                status, _, _, _, _, instr, _, _, _, _, _, _, _ = res
+                
+                if any(k in instr for k in ["卖出", "清仓", "止损", "止盈", "减仓", "获利", "紧急"]):
+                    match = re.search(r"([\d\.]+) 份", instr)
+                    if match:
+                        amt = float(match.group(1))
+                        self.execute_sell(code, rt_info['est_nav'], amt, status)
+                        logs.append(f"执行卖出: {info['name']} {amt}份 ({status})")
+                    else:
+                        amt = info['shares'] * 0.5
+                        self.execute_sell(code, rt_info['est_nav'], amt, f"{status}(默认半仓)")
+                        logs.append(f"执行卖出(默认): {info['name']} {amt}份")
+
+        # 2. 买入逻辑
+        curr_assets = self.get_total_assets(rt_map)
+        if self.data['cash'] / curr_assets > 0.2:
+            hot_funds = analyzer.get_hot_funds()
+            targets = hot_funds[:50] 
+            
+            for fund in targets:
+                if self.data['cash'] < 5000: break
+                if fund['code'] in self.data['holdings']: 
+                    scan_logs.append(f"跳过 {fund['name']}: 已持仓")
+                    continue
+                
+                df = analyzer.fetch_data(fund['code'])
+                rt_info = rt_map.get(fund['code'])
+                df_merged, _ = analyzer.merge_realtime_data(df, rt_info)
+                df_final = analyzer.calculate_indicators(df_merged)
+                
+                if not df_final.empty:
+                    pivots = analyzer.find_pivots(df_final, order=10)
+                    res = analyzer.analyze_dynamic_status(df_final, pivots, 0, 0, 0, total_capital=curr_assets, risk_per_trade=risk_per_trade)
+                    status, _, reason, _, _, instr, _, _, _, shares, cur_p, _, _ = res
+                    
+                    if any(x in instr for x in ["买入", "建仓", "追涨", "持有"]):
+                        buy_val = min(shares * cur_p, self.data['cash']) if shares > 0 else self.data['cash']*0.1
+                        if buy_val > 1000:
+                            self.execute_buy(fund['code'], fund['name'], cur_p, buy_val)
+                            logs.append(f"买入: {fund['name']} (信号:{status})")
+                    else:
+                        scan_logs.append(f"落选 {fund['name']}: {reason} (指令:{instr})")
+                else:
+                    scan_logs.append(f"跳过 {fund['name']}: 数据获取失败")
+        
+        return logs, scan_logs
+
+def process_scan_item(args):
+    analyzer, m_fund, order, capital, risk, rt_map, mode = args
+    df = analyzer.fetch_data(m_fund['code'], period=mode)
+    
+    rt_info = rt_map.get(m_fund['code'])
+    df_merged, has_rt = analyzer.merge_realtime_data(df, rt_info)
+    df_final = analyzer.calculate_indicators(df_merged)
+    
+    if df_final.empty: return None
+    pivots = analyzer.find_pivots(df_final, order=order)
+    is_valid, struct_msg, _ = analyzer.validate_impulse_wave(pivots)
+    
+    res = analyzer.analyze_dynamic_status(
+        df_final, pivots, 0, 0, 0, total_capital=capital, risk_per_trade=risk
+    )
+    status, _, _, _, _, instr, b_limit, b_stop, _, shares, cur_p, est_pct, forecast = res
+    stats, _ = analyzer.run_backtest(df_final, pivots)
+    score = stats['win_rate'] * stats['count']
+    if is_valid: score += 500
+    
+    price_display = f"{cur_p:.4f}"
+    if est_pct != 0: price_display += f" ({est_pct:+.2f}%)"
+    if has_rt: price_display += " [Live]"
+    
+    return {
+        "名称": m_fund['name'], "代码": m_fund['code'], "状态": status, "指令": instr,
+        "实时估值": price_display, "建议仓位": f"{shares*cur_p:.0f}元",
+        "结构": struct_msg, "胜率": f"{stats['win_rate']:.0f}%", "评分": score,
+        "明日预测": f"{forecast['target']:.4f}"
+    }
+
+# === UI 主程序 ===
+def main():
+    st.sidebar.title("🛠 指挥官控制台")
+    app_mode = st.sidebar.radio("系统模式", ["📊 个人实盘诊断", "🤖 全自动模拟盘"], index=1)
+    
+    analyzer = ElliottWaveAnalyzer()
+    
+    # 0. 启动时获取全市场实时估值 (使用新的 get_batch_estimations)
+    codes_to_fetch = [f['code'] for f in MY_PORTFOLIO] + [f['code'] for f in STATIC_POOL]
+    # 如果是全市场扫描模式，这里还需要加上热门基金的code，但为了启动速度，我们可以延迟获取
+    
+    with st.sidebar:
+        if st.button("🔄 刷新实时数据"):
+            st.cache_data.clear()
+            st.success("刷新中...")
+    
+    # 初始获取一批
+    rt_map = analyzer.get_batch_estimations(codes_to_fetch)
+
+    if app_mode == "📊 个人实盘诊断":
+        st.header("📂 个人实盘诊断 (极速直连)")
+        strategy_mode = st.radio("交易风格", ["短线波段 (日线)", "长线投资 (周线)"], horizontal=True)
+        period_param = 'weekly' if "周线" in strategy_mode else 'daily'
+        
+        sim_new = st.slider("新持仓模拟比例", 0.0, 1.0, 0.0)
+        zigzag_order = st.slider("波浪灵敏度", 5, 30, 10)
+        
+        for fund in MY_PORTFOLIO:
+            df = analyzer.fetch_data(fund['code'], period=period_param)
+            with st.expander(f"📊 {fund['name']}", expanded=False):
+                if df.empty: st.error("No Data"); continue
+                
+                fund_rt = rt_map.get(fund['code'])
+                df_merged, has_rt = analyzer.merge_realtime_data(df, fund_rt)
+                df_final = analyzer.calculate_indicators(df_merged)
+                
+                eff_new = fund.get('hold_7d', 0) if sim_new == 0 else fund['hold'] * sim_new
+                pivots = analyzer.find_pivots(df_final, order=zigzag_order)
+                struct_msg, labels = analyzer.identify_wave_structure(pivots)
+                
+                res = analyzer.analyze_dynamic_status(df_final, pivots, fund['cost'], fund['hold'], eff_new, realtime_info=fund_rt)
+                status, color, reason, fibs, _, instr, _, _, _, _, est_price, est_pct, forecast = res
+                
+                c1, c2, c3 = st.columns([1,1,2])
+                price_label = f"实时估值 ({fund_rt['time'][-8:]})" if has_rt and 'time' in fund_rt else "净值"
+                c1.metric(price_label, f"{est_price:.4f}", f"{est_pct:+.2f}%")
+                c2.metric("状态", status, delta_color="normal" if color=="blue" else "inverse")
+                instr_color = "red" if "卖" in instr or "损" in instr else "green"
+                c3.markdown(f"### 指令: <span style='color:{instr_color}'>{instr}</span>", unsafe_allow_html=True)
+                
+                st.info(f"🔮 **明日预测**: {forecast['target']:.4f} ({forecast['desc']})\n"
+                        f"🌊 **结构**: {struct_msg} | **逻辑**: {reason}")
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=df_final['date'], y=df_final['nav'], mode='lines', name='净值'))
+                
+                p_dates = [p['date'] for p in pivots]
+                p_navs = [p['nav'] for p in pivots]
+                if pivots:
+                    p_dates.append(df_final.iloc[-1]['date'])
+                    p_navs.append(df_final.iloc[-1]['nav'])
+                fig.add_trace(go.Scatter(x=p_dates, y=p_navs, mode='lines', name='波浪结构', line=dict(color='orange', dash='dot')))
+                
+                for idx, label in labels.items():
+                    if idx < len(df_final):
+                        row = df_final.iloc[idx]
+                        fig.add_annotation(x=row['date'], y=row['nav'], text=label, showarrow=True, arrowhead=1)
+                
+                if has_rt:
+                    fig.add_trace(go.Scatter(x=[df_final.iloc[-1]['date']], y=[df_final.iloc[-1]['nav']], mode='markers', marker=dict(color='red', size=12, symbol='star'), name='盘中实时'))
+
+                if fibs:
+                    fig.add_hline(y=fibs['0.618'], line_dash="solid", line_color="red", annotation_text="0.618")
+                    fig.add_hline(y=fibs['0.382'], line_dash="dot", line_color="orange", annotation_text="0.382")
+                    
+                st.plotly_chart(fig, use_container_width=True)
+
+    # === 模式二：模拟盘 ===
+    elif app_mode == "🤖 全自动模拟盘":
+        st.title("🤖 波浪理论全自动模拟交易系统")
+        pt = PaperTradingSystem()
+        
+        # 补全模拟盘持仓的实时数据
+        holding_codes = list(pt.data['holdings'].keys())
+        if holding_codes:
+            rt_map.update(analyzer.get_batch_estimations(holding_codes))
+
+        curr_assets = pt.get_total_assets(rt_map)
+        init_cap = pt.data['init_capital']
+        pnl = curr_assets - init_cap
+        pnl_pct = pnl / init_cap * 100
+        pos_ratio = (curr_assets - pt.data['cash']) / curr_assets * 100
+        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("总资产", f"{curr_assets:,.2f}", f"{pnl_pct:+.2f}%")
+        c2.metric("可用现金", f"{pt.data['cash']:,.2f}")
+        c3.metric("持仓盈亏", f"{pnl:,.2f}")
+        c4.metric("仓位", f"{pos_ratio:.1f}%")
+
+        st.markdown("---")
+        if st.button("🚀 运行今日策略 (基于实时数据)", type="primary"):
+            with st.spinner("正在融合实时数据并执行策略..."):
+                # 获取热门基金并抓取实时数据
+                hot_funds = analyzer.get_hot_funds()
+                hot_codes = [f['code'] for f in hot_funds]
+                # 批量获取热门基金的实时数据
+                rt_map.update(analyzer.get_batch_estimations(hot_codes))
+                
+                logs, scan_logs = pt.run_auto_pilot(analyzer, rt_map)
+            
+            if logs:
+                for log in logs: st.toast(log)
+                st.success(f"执行完毕，产生 {len(logs)} 笔交易")
+            else:
+                st.info("盘中扫描完毕，暂无成交")
+            
+            with st.expander("查看选股扫描日志 (Top 50)", expanded=False):
+                st.write(f"共扫描 {len(scan_logs)} 只基金")
+                for sl in scan_logs[:20]: st.text(sl)
+                if len(scan_logs) > 20: st.text("...")
+            
+            time.sleep(1)
+        
+        tab1, tab2, tab3 = st.tabs(["当前持仓", "资产曲线", "交易历史"])
+        with tab1:
+            holdings = pt.data['holdings']
+            if not holdings: st.info("当前空仓")
+            else:
+                h_data = []
+                for c, v in holdings.items():
+                    curr = rt_map.get(c, {}).get('est_nav', v['cost'])
+                    mv = curr * v['shares']
+                    prof = mv - v['cost'] * v['shares']
+                    h_data.append({"代码": c, "名称": v['name'], "成本": f"{v['cost']:.4f}", "现价": f"{curr:.4f}", "市值": f"{mv:.0f}", "盈亏": f"{prof:+.0f}"})
+                st.dataframe(pd.DataFrame(h_data), use_container_width=True)
+        # ... (tab2, tab3 保持不变) ...
+
+    # ... (市场扫描部分) ...
+    st.markdown("---")
+    st.header("🚀 全市场作战机会 (实时融合)")
+    if st.button("开始扫描", type="primary"):
+        progress = st.progress(0)
+        results = []
+        market_list = STATIC_POOL 
+        hot_list = analyzer.get_hot_funds()
+        existing = set(m['code'] for m in market_list)
+        for h in hot_list:
+            if h['code'] not in existing: market_list.append(h)
+        
+        # 批量获取所有扫描对象的实时数据
+        all_scan_codes = [m['code'] for m in market_list]
+        with st.spinner("正在并发获取实时估值..."):
+            rt_map.update(analyzer.get_batch_estimations(all_scan_codes))
+        
+        status_text = st.empty()
+        total_tasks = len(market_list)
+        
+        for i, m in enumerate(market_list):
+            status_text.text(f"正在扫描: {m['name']} ({i+1}/{total_tasks})...")
+            args = (analyzer, m, 10, 100000, 2.0, rt_map, 'daily')
+            try:
+                res = process_scan_item(args)
+                if res: results.append(res)
+            except: pass
+            progress.progress((i + 1) / total_tasks)
+        
+        status_text.empty()
+        if results:
+            df_res = pd.DataFrame(results).sort_values(by="评分", ascending=False)
+            def highlight(val):
+                if "买入" in val or "持有" in val or "追涨" in val: return 'color: green; font-weight: bold'
+                return ''
+            st.dataframe(df_res.style.map(highlight, subset=["指令"]), use_container_width=True)
+
+if __name__ == "__main__":
+    main()
