@@ -1057,7 +1057,14 @@ class PortfolioManager:
         try:
             # 查询 trader_storage 表中对应 ID 的 portfolio_data 列
             res = self.conn.table("trader_storage").select("portfolio_data").eq("id", self.user_id).execute()
-            
+            if (not res.data or len(res.data) == 0) and os.path.exists(self.file):
+                with open(self.file, 'r', encoding='utf-8') as f:
+                    local_data = json.load(f)
+                self.data = local_data
+                self.save() # 将本地 JSON 推送到云端
+                st.success("✅ 已从本地 JSON 成功迁移历史记录至云端！")
+                return local_data
+                
             if res.data and len(res.data) > 0:
                 data = res.data[0]['portfolio_data']
                 
@@ -1291,6 +1298,22 @@ class PortfolioManager:
         })
         self.save()
         return True, f"成功入金 ¥{amount:,.2f}"
+
+    def execute_withdraw(self, amount, note="账户出金"):
+        """出金逻辑：减少可用现金"""
+        if amount <= 0: return False, "金额必须大于0"
+        if self.data['capital'] < amount: return False, "可用资金不足，无法出金"
+        
+        self.data['capital'] -= amount
+        now = get_bj_time() # 确保使用北京时间
+        self.data['history'].append({
+            "date": now.strftime('%Y-%m-%d %H:%M:%S'), 
+            "action": "WITHDRAW", 
+            "code": "-", "name": "转出至银行", "price": 1.0, 
+            "amount": amount, "reason": note, "pnl": 0
+        })
+        self.save() # 同步到云端
+        return True, f"成功出金 ¥{amount:,.2f}"
     
     def check_dead_money(self):
         """
@@ -1813,12 +1836,16 @@ def render_dashboard():
                 fig_pie.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250, showlegend=False)
                 st.plotly_chart(fig_pie, use_container_width=True)
             
-            with st.expander("💰 资金划转 (入金/出金)", expanded=False):
-                d_col1, d_col2 = st.columns([2, 1])
-                deposit_amt = d_col1.number_input("金额", min_value=0.0, step=1000.0, value=2000.0, label_visibility="collapsed")
-                if d_col2.button("充值", use_container_width=True):
-                    suc, msg = pm.execute_deposit(deposit_amt, "工资定投")
-                    if suc: st.toast(msg, icon="💰"); time.sleep(1); st.rerun()
+            with st.expander("💰 资金划转 (入/出金)", expanded=False):
+            d_col1, d_col2, d_col3 = st.columns([2, 1, 1])
+            amt = d_col1.number_input("金额", min_value=0.0, step=1000.0, value=2000.0)
+            if d_col2.button("充值"):
+                suc, msg = pm.execute_deposit(amt)
+                if suc: st.rerun()
+            if d_col3.button("出金"):
+                suc, msg = pm.execute_withdraw(amt)
+                if suc: st.rerun()
+                else: st.error(msg)
 
             with st.expander("🛠 手动下单", expanded=False):
                  with st.form("manual_trade"):
