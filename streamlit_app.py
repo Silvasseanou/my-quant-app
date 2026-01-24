@@ -10,12 +10,17 @@ import os
 import re
 import requests
 import smtplib
+import datetime
+from datetime import timedelta, timezone
 from email.mime.text import MIMEText
 from email.header import Header
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import timedelta
+
+def get_beijing_time():
+    # 获取 UTC 时间并强制转换时区，适配所有部署环境
+    return datetime.datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8)))
 
 # === 全局配置 ===
 st.set_page_config(layout="wide", page_title="Elliott Wave Mobile Full (v37.0)", page_icon="🌊", initial_sidebar_state="expanded")
@@ -60,60 +65,28 @@ FEE_C_CLASS = {'buy': 0.0, 'sell_punish': 0.015, 'sell_normal': 0.0}
 
 # === 1. 消息推送服务 (新增功能) ===
 class NotificationService:
+    FEISHU_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/31bb5f01-1e8b-4b08-8824-d634b95329e8"
+
     @staticmethod
-    def send_feishu(webhook_url, title, content):
-        """发送飞书/Lark 机器人消息"""
-        if not webhook_url: return False, "未配置 Webhook"
+    def send_feishu(title, content):
         headers = {'Content-Type': 'application/json'}
+        # 使用修正后的北京时间
+        now_str = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
         data = {
             "msg_type": "interactive",
             "card": {
                 "header": {
-                    "template": "red" if "止损" in title or "预警" in title else "blue",
+                    "template": "red" if any(x in title+content for x in ["止损", "预警", "卖出"]) else "blue",
                     "title": {"content": title, "tag": "plain_text"}
                 },
-                "elements": [{
-                    "tag": "div",
-                    "text": {"content": content, "tag": "lark_md"}
-                }, {
-                    "tag": "note",
-                    "elements": [{"content": f"时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "tag": "plain_text"}]
-                }]
+                "elements": [
+                    {"tag": "div", "text": {"content": content, "tag": "lark_md"}},
+                    {"tag": "note", "elements": [{"content": f"通知时间 (北京): {now_str}", "tag": "plain_text"}]}
+                ]
             }
         }
         try:
-            r = requests.post(webhook_url, headers=headers, json=data)
-            return r.status_code == 200, "发送成功"
-        except Exception as e:
-            return False, str(e)
-
-    @staticmethod
-    def send_bark(device_key, title, content):
-        """发送 iOS Bark 通知"""
-        if not device_key: return False, "未配置 Bark Key"
-        # Bark URL 不支持过长，简单截断
-        short_content = content[:200] + "..." if len(content) > 200 else content
-        url = f"https://api.day.app/{device_key}/{title}/{short_content}?icon=https://cdn-icons-png.flaticon.com/512/2534/2534204.png"
-        try:
-            r = requests.get(url, timeout=5)
-            return r.status_code == 200, "发送成功"
-        except Exception as e:
-            return False, str(e)
-
-    @staticmethod
-    def send_email(smtp_cfg, title, content):
-        """发送邮件通知"""
-        if not smtp_cfg.get('host'): return False, "未配置 SMTP"
-        try:
-            message = MIMEText(content, 'plain', 'utf-8')
-            message['From'] = Header("Elliott Wave Trader", 'utf-8')
-            message['To'] = Header("Trader", 'utf-8')
-            message['Subject'] = Header(title, 'utf-8')
-
-            smtp = smtplib.SMTP_SSL(smtp_cfg['host'], int(smtp_cfg['port']))
-            smtp.login(smtp_cfg['user'], smtp_cfg['pass'])
-            smtp.sendmail(smtp_cfg['user'], [smtp_cfg['receiver']], message.as_string())
-            smtp.quit()
+            requests.post(NotificationService.FEISHU_URL, json=data, timeout=5)
             return True, "发送成功"
         except Exception as e:
             return False, str(e)
@@ -1150,7 +1123,7 @@ class PortfolioManager:
                 
                 exec_price = order.get('cost', 0.0)
                 self.data['history'].append({
-                    "date": str(datetime.datetime.now())[:19],
+                    "date": str(get_beijing_time())[:19],
                     "action": "CONFIRM",
                     "code": order['code'],
                     "name": order['name'],
@@ -1295,7 +1268,7 @@ class PortfolioManager:
             
         fee_note = f" (含惩罚费 ¥{total_fee:.2f})" if total_fee > 0 else ""
         self.data['history'].append({
-            "date": f"{str(datetime.datetime.now())[:19]}", 
+            "date": f"{str(get_beijing_time())[:19]}", 
             "action": "SELL", 
             "code": code, "name": h['name'], "price": price, 
             "amount": total_revenue, "reason": f"{reason}{fee_note} | 赎回确认", 
@@ -1307,7 +1280,7 @@ class PortfolioManager:
     def execute_deposit(self, amount, note="账户入金"):
         if amount <= 0: return False, "金额必须大于0"
         self.data['capital'] += amount
-        now = datetime.datetime.now()
+        now = get_beijing_time()
         self.data['history'].append({
             "date": f"{str(now.date())} {now.strftime('%H:%M:%S')}", 
             "action": "DEPOSIT", 
@@ -1471,7 +1444,7 @@ def render_dashboard():
         
         st.caption(f"当前可用资金: ¥{pm.data['capital']:,.0f}")
         
-        now = datetime.datetime.now()
+        now = get_beijing_time()
         is_trading_day = now.weekday() < 5 
         is_before_3pm = now.hour < 15
         trade_status = "🟢 盘中" if (is_trading_day and is_before_3pm) else "🔴 盘后"
@@ -1516,15 +1489,13 @@ def render_dashboard():
             if scan_results:
                 st.success(f"发现 {len(scan_results)} 个机会!")
                 st.session_state.scan_results = scan_results
-                # --- 新增：扫描结果推送按钮 ---
-                scan_content = "🚀 Elliott Wave 扫描发现机会:\n" + "\n".join(
-                    [f"- {r['name']}({r['code']}): {r['res']['score']}分" for r in scan_results[:5]] # 只推前5个最高分的
-                )
-                if st.button("📱 推送扫描机会到手机"):
-                    ok, _ = NotificationService.send_feishu(feishu_url, "机会扫描提醒", scan_content) # 以飞书为例
-                    if ok: st.toast("机会已发送")
-            else:
-                st.info("暂无高分信号。"); st.session_state.scan_results = []
+                # 构建推送内容
+                opp_list = [f"**{r['name']}** ({r['code']}): {r['res']['score']}分 - {r['res']['pattern']}" for r in scan_results[:8]]
+                opp_content = "🚀 **全市场扫描 Top 机会展示**:\n" + "\n".join(opp_list)
+                
+                if st.button("📱 将以上机会推送到飞书", type="primary"):
+                    NotificationService.send_feishu(" Elliott Wave 选股机会", opp_content)
+                    st.toast("机会列表已发送到飞书")
 
         if 'scan_results' in st.session_state and st.session_state.scan_results:
             results_to_show = st.session_state.scan_results
@@ -1601,56 +1572,40 @@ def render_dashboard():
     action_container = st.container(border=True)
     
     with action_container:
-       # 1. 扫描持仓警报 (包含诊断逻辑)
         alerts = []
+        bj_now = get_beijing_time() # 获取当前北京时间
+        
         for h in pm.data['holdings']:
             curr_p, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
             
-            # --- 新增：实时波浪诊断检查 ---
+            # --- 核心逻辑：在推送中加入波浪诊断 ---
             if not df.empty:
                 df_calc = IndicatorEngine.calculate_indicators(df)
                 pivots = WaveEngine.zig_zag(df_calc['nav'][-100:])
                 res = WaveEngine.analyze_structure(df_calc, pivots)
                 
-                # 如果诊断结果为 Sell，加入警报
+                # 1. 检查诊断卖出信号
                 if res['status'] == 'Sell':
-                    alerts.append(f"🚨 **诊断卖出**: {h['name']} ({res['desc']})")
-            # 止损/止盈检查
-            if h.get('stop_loss', 0) > 0 and curr_p < h['stop_loss']:
-                alerts.append(f"🔴 **止损触发**: {h['name']} (现价 {curr_p:.4f} < 止损 {h['stop_loss']:.4f})")
-            elif h.get('target', 0) > 0 and curr_p >= h['target']:
-                alerts.append(f"🟢 **止盈触发**: {h['name']} (现价 {curr_p:.4f} >= 目标 {h['target']:.4f})")
+                    alerts.append(f"🚨 **波浪卖点**: {h['name']} ({res['desc']})")
             
-            # 移动止损检查
-            if curr_p > h.get('highest_nav', 0): h['highest_nav'] = curr_p
+            # 2. 原有的硬件止损检查
+            if h.get('stop_loss', 0) > 0 and curr_p < h['stop_loss']:
+                alerts.append(f"🔴 **破位止损**: {h['name']} (现价{curr_p:.4f} < 止损{h['stop_loss']:.4f})")
+            
+            # 3. 移动止损检查
             dd = (h.get('highest_nav', h['cost']) - curr_p) / h.get('highest_nav', h['cost'])
             if dd > TRAILING_STOP_PCT and curr_p > h['cost'] * TRAILING_STOP_ACTIVATE:
-                alerts.append(f"🟠 **移动止损**: {h['name']} (高点回撤 {dd:.1%})")
+                alerts.append(f"🟠 **回撤止损**: {h['name']} (高点回撤{dd:.1%})")
 
-        # 2. 僵尸持仓检查 (Dead Money)
-        dead_positions = pm.check_dead_money()
-        for d in dead_positions:
-            alerts.append(f"🧟 **僵尸持仓**: {d['name']} (持有 {d['days']}天, 收益 {d['pnl']:.2%}) -> 建议换股")
-
-        # 3. 市场环境
-        regime = DataService.get_market_regime()
-        if regime['score'] <= 0.2:
-            alerts.insert(0, "🛡️ **市场极寒**: 建议谨慎开仓 (当前处于防御区间)")
-        
+        # 推送按钮执行
         if alerts:
-            for a in alerts: st.markdown(a)
-            # 新增：一键推送按钮
-            if st.button("📱 一键推送到手机", type="primary", use_container_width=True):
+            st.warning(f"发现 {len(alerts)} 条风险项")
+            if st.button("📱 立即推送到飞书", use_container_width=True):
                 content = "\n".join(alerts)
-                ok, msg = False, ""
-                if notif_method == "飞书 (Lark)": ok, msg = NotificationService.send_feishu(feishu_url, "持仓预警", content)
-                elif notif_method == "Bark (iOS)": ok, msg = NotificationService.send_bark(bark_key, "持仓预警", content)
-                elif notif_method == "邮件 (Email)": ok, msg = NotificationService.send_email({'host':email_host,'port':email_port,'user':email_user,'pass':email_pass,'receiver':email_recv}, "持仓预警", content)
-                
-                if ok: st.success("✅ 已推送")
-                else: st.error(f"推送失败: {msg}")
+                NotificationService.send_feishu(" Elliott Wave 持仓预警", content)
+                st.success("已推送")
         else:
-            st.success("✅ 今日无紧急操作，持仓状态良好。")
+            st.success(f"✅ 持仓风险扫描安全 ({bj_now.strftime('%H:%M:%S')})")
 
     # === 主界面 ===
     tab1, tab2, tab3 = st.tabs(["🔍 我的持仓诊断", "💼 模拟交易台 (Pro)", "📊 策略回测"])
@@ -1704,7 +1659,7 @@ def render_dashboard():
         st.subheader("1. 实时风险监控 (Risk Monitor)")
         monitor_container = st.container()
         sell_alerts = []
-        now_str = datetime.datetime.now().strftime("%H:%M:%S")
+        now_str = get_beijing_time().strftime("%H:%M:%S")
         
         if holdings:
             with st.spinner(f"正在扫描 {len(holdings)} 个持仓的实时风险..."):
