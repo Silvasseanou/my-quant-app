@@ -12,16 +12,15 @@ import requests
 import pytz
 import smtplib
 import datetime
-from datetime import datetime
 from email.mime.text import MIMEText
 from email.header import Header
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from st_supabase_connection import SupabaseConnection
 
 # 修改位置：脚本顶部
-def get_beijing_time():
+def get_bj_time():
     """无论服务器在哪，永远返回北京时间"""
     tz = pytz.timezone('Asia/Shanghai')
     return datetime.datetime.now(tz)
@@ -244,7 +243,7 @@ class Holding:
         try:
             buy_date_str = self.lots[0].date.split(' ')[0]
             buy_date = datetime.datetime.strptime(buy_date_str, "%Y-%m-%d").date()
-            return (get_beijing_time().date() - buy_date).days
+            return (get_bj_time().date() - buy_date).days
         except:
             return 0
 
@@ -345,7 +344,7 @@ class DataService:
         est_p, _, _ = DataService.get_realtime_estimate(code)
         
         curr_price = cost_basis 
-        today_str = get_beijing_time().date().strftime("%Y-%m-%d")
+        today_str = get_bj_time().date().strftime("%Y-%m-%d")
         used_est = False
         
         if not df.empty:
@@ -1041,8 +1040,6 @@ class PortfolioBacktester:
             
         return {'equity': equity_curve, 'drawdown': drawdown_curve, 'trades': trades}
 
-from st_supabase_connection import SupabaseConnection
-
 class PortfolioManager:
     def __init__(self):
         # 1. 初始化 Supabase 连接
@@ -1300,7 +1297,7 @@ class PortfolioManager:
         检查僵尸持仓: 持有时间 > 40天 且 收益率在 +/- 3% 之间
         """
         dead_positions = []
-        today_dt = get_beijing_time().date()
+        today_dt = get_bj_time().date()
         
         for h in self.data['holdings']:
             # 获取最新价格
@@ -1402,7 +1399,7 @@ def render_dashboard():
         test_df = DataService.fetch_nav_history("000300")
         if not test_df.empty:
             last_date_str = str(test_df.index[-1].date())
-            today_str = str(get_beijing_time().date())
+            today_str = str(get_bj_time().date())
             if last_date_str == today_str:
                 st.caption(f"📅 数据更新至: {last_date_str} (✅ 最新)")
             else:
@@ -1435,7 +1432,7 @@ def render_dashboard():
         
         st.caption(f"当前可用资金: ¥{pm.data['capital']:,.0f}")
         
-        now = get_beijing_time()
+        now = get_bj_time()
         is_trading_day = now.weekday() < 5 
         is_before_3pm = now.hour < 15
         trade_status = "🟢 盘中" if (is_trading_day and is_before_3pm) else "🔴 盘后"
@@ -1564,7 +1561,7 @@ def render_dashboard():
     
     with action_container:
         alerts = []
-        bj_now = get_beijing_time() # 获取当前北京时间
+        bj_now = get_bj_time() # 获取当前北京时间
         
         for h in pm.data['holdings']:
             curr_p, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
@@ -1650,7 +1647,7 @@ def render_dashboard():
         st.subheader("1. 实时风险监控 (Risk Monitor)")
         monitor_container = st.container()
         sell_alerts = []
-        now_str = get_beijing_time().strftime("%H:%M:%S")
+        now_str = get_bj_time().strftime("%H:%M:%S")
         
         if holdings:
             with st.spinner(f"正在扫描 {len(holdings)} 个持仓的实时风险..."):
@@ -1873,7 +1870,7 @@ def render_dashboard():
                     
                     lots = h.get('lots', [])
                     penalty_shares = 0
-                    today_dt = get_beijing_time().date()
+                    today_dt = get_bj_time().date()
                     for lot in lots:
                         l_date = datetime.datetime.strptime(lot['date'].split(' ')[0], "%Y-%m-%d").date()
                         if (today_dt - l_date).days < 7: penalty_shares += lot['shares']
@@ -1918,14 +1915,14 @@ def render_dashboard():
             st.dataframe(df_hist, height=300, use_container_width=True)
             # 导出功能
             csv = df_hist.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 导出流水 (Excel/CSV)", data=csv, file_name=f"trade_history_{get_beijing_time().date()}.csv", mime="text/csv")
+            st.download_button("📥 导出流水 (Excel/CSV)", data=csv, file_name=f"trade_history_{get_bj_time().date()}.csv", mime="text/csv")
 
     with tab3:
         st.header("📊 策略时光机 & 压力测试")
         mode = st.radio("选择回测模式", ["单只基金 (压力测试)", "时光机 (组合回测)", "⚔️ 策略 PK (控制变量法)", "📅 择时分析 (入场点全景图)"], horizontal=True)
         col_d1, col_d2 = st.columns(2)
         start_d = col_d1.date_input("开始日期", datetime.date(2022, 1, 1))
-        end_d = col_d2.date_input("结束日期", get_beijing_time().date())
+        end_d = col_d2.date_input("结束日期", get_bj_time().date())
 
         if "PK" in mode:
             st.subheader("⚔️ 策略竞技场")
