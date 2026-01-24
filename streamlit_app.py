@@ -12,7 +12,7 @@ import requests
 import pytz
 import smtplib
 import datetime
-from datetime import timedelta, timezone
+from datetime import datetime
 from email.mime.text import MIMEText
 from email.header import Header
 from dataclasses import dataclass, field, asdict
@@ -23,7 +23,7 @@ from st_supabase_connection import SupabaseConnection
 
 def get_bj_time():
     tz = pytz.timezone('Asia/Shanghai')
-    return datetime.now(tz)
+    return datetime.now(tz) # 注意这里少了一个 .datetime
 
 # === 全局配置 ===
 st.set_page_config(layout="wide", page_title="Elliott Wave Mobile Full (v37.0)", page_icon="🌊", initial_sidebar_state="expanded")

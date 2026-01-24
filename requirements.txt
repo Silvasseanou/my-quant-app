@@ -6,3 +6,4 @@ akshare
 requests
 st-supabase-connection
 supabase
+pytz
