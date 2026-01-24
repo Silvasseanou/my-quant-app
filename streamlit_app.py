@@ -18,7 +18,6 @@ from email.header import Header
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from st_supabase_connection import SupabaseConnection
 
 
 def get_bj_time():
@@ -647,6 +646,8 @@ class RealBacktester:
             
         return {'equity': equity_curve, 'trades': trades, 'win_rate': win_rate, 'rr': win_loss_ratio}
 
+
+
 class PortfolioBacktester:
     def __init__(self, pool_codes, start_date, end_date):
         self.pool = pool_codes
@@ -1038,6 +1039,7 @@ class PortfolioBacktester:
             
         return {'equity': equity_curve, 'drawdown': drawdown_curve, 'trades': trades}
 
+from st_supabase_connection import SupabaseConnection
 
 class PortfolioManager:
     def __init__(self):
