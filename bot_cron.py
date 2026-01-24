@@ -10,10 +10,13 @@ import numpy as np
 import akshare as ak
 from supabase import create_client
 
+
 # === 1. 核心配置 ===
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 FEISHU_HOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/31bb5f01-1e8b-4b08-8824-d634b95329e8"
+
+print("DEBUG: 执行的是满血增强版 v2.0")
 
 def get_bj_time():
     """强制北京时间"""
