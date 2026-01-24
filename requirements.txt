@@ -4,3 +4,5 @@ numpy
 plotly
 akshare
 requests
+st-supabase-connection
+supabase
