@@ -1837,15 +1837,21 @@ def render_dashboard():
                 st.plotly_chart(fig_pie, use_container_width=True)
             
             with st.expander("💰 资金划转 (入/出金)", expanded=False):
-            d_col1, d_col2, d_col3 = st.columns([2, 1, 1])
-            amt = d_col1.number_input("金额", min_value=0.0, step=1000.0, value=2000.0)
-            if d_col2.button("充值"):
-                suc, msg = pm.execute_deposit(amt)
-                if suc: st.rerun()
-            if d_col3.button("出金"):
-                suc, msg = pm.execute_withdraw(amt)
-                if suc: st.rerun()
-                else: st.error(msg)
+                d_col1, d_col2, d_col3 = st.columns([2, 1, 1])
+                amt = d_col1.number_input("金额", min_value=0.0, step=1000.0, value=2000.0)
+                if d_col2.button("充值", use_container_width=True):
+                    suc, msg = pm.execute_deposit(amt)
+                    if suc: 
+                        st.toast(msg)
+                        st.rerun()
+            
+                if d_col3.button("出金", use_container_width=True):
+                    suc, msg = pm.execute_withdraw(amt)
+                    if suc: 
+                        st.toast(msg)
+                        st.rerun()
+                    else: 
+                        st.error(msg)
 
             with st.expander("🛠 手动下单", expanded=False):
                  with st.form("manual_trade"):
