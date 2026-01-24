@@ -152,15 +152,11 @@ def run_cron_mission():
     else:
         sections.append("✅ **风险巡检**: 当前持仓及模拟交易台表现正常，未发现 Sell 卖出信号。")
 
-    # --- B. 全市场雷达 (Top 15 & 合并 A/C) ---
+    # --- B. 全市场雷达 (Top 15 & 取消 A/C 去重) ---
     buy_opps = []
-    seen_base_names = set()
     market_pool = DataService.get_market_wide_pool()
     
     for fund in market_pool:
-        base_name = re.sub(r'(联接)?[ABC]$|指数[ABC]$|主题[ABC]$|混合[ABC]$|ETF(联接)?', '', fund['name']).strip()
-        if base_name in seen_base_names: continue
-        
         est_m, _ = DataService.get_realtime_estimate(fund['code'])
         df_m = DataService.fetch_nav_history(fund['code'])
         if est_m and not df_m.empty:
@@ -170,15 +166,17 @@ def run_cron_mission():
         df_m = IndicatorEngine.calculate_indicators(df_m)
         ans_m = WaveEngine.analyze_structure(df_m)
         
-        if ans_m['status'] == 'Buy' and ans_m['score'] >= 80:
+        # 放宽条件：评分≥70 即可（可选）
+        if ans_m['status'] == 'Buy' and ans_m['score'] >= 70:
             total_assets = capital + sum([h['shares'] * h['cost'] for h in real_holdings])
             suggest_amt = total_assets * 0.1
             buy_opps.append(f"✅ **{fund['name']}** ({fund['code']})\n   • 评分: {ans_m['score']} | 建议单位: ¥{suggest_amt:,.0f}\n   • 原因: {ans_m['desc']}")
-            seen_base_names.add(base_name)
         
+        # 最多显示15只
         if len(buy_opps) >= 15: break
 
-    sections.append(f"🔭 **选股雷达 (Top 15)**\n" + ("\n".join(buy_opps) if buy_opps else "⚪ 暂无符合突破条件的强信号。"))
+    # 动态标题：显示实际数量
+    sections.append(f"🔭 **选股雷达 (强动能 Top {len(buy_opps)})**\n" + ("\n".join(buy_opps) if buy_opps else "⚪ 暂无符合突破条件的强信号。"))
 
     # --- C. 飞书卡片组装 ---
     content = "\n\n---\n\n".join(sections)
@@ -204,7 +202,6 @@ if __name__ == "__main__":
         run_cron_mission()
     except Exception as e:
         # 兜底报错，防止脚本静默失效
-        # 增加超时和异常捕获，避免报错推送本身失败
         try:
             requests.post(
                 FEISHU_HOOK, 
