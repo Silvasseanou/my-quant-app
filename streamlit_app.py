@@ -15,6 +15,7 @@ from email.header import Header
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import timedelta
 
 # === 全局配置 ===
 st.set_page_config(layout="wide", page_title="Elliott Wave Mobile Full (v37.0)", page_icon="🌊", initial_sidebar_state="expanded")
@@ -1203,7 +1204,8 @@ class PortfolioManager:
 
     def execute_buy(self, code, name, price, amount, stop_loss, target, reason):
         if self.data['capital'] < amount: return False, "可用资金不足"
-        now = datetime.datetime.now()
+        now = datetime.datetime.utcnow() + timedelta(hours=8)
+        now_str = now.strftime("%H:%M:%S")
         settlement_date = self._get_settlement_date(now)
         shares = amount / price
         self.data['capital'] -= amount
@@ -1514,6 +1516,13 @@ def render_dashboard():
             if scan_results:
                 st.success(f"发现 {len(scan_results)} 个机会!")
                 st.session_state.scan_results = scan_results
+                # --- 新增：扫描结果推送按钮 ---
+                scan_content = "🚀 Elliott Wave 扫描发现机会:\n" + "\n".join(
+                    [f"- {r['name']}({r['code']}): {r['res']['score']}分" for r in scan_results[:5]] # 只推前5个最高分的
+                )
+                if st.button("📱 推送扫描机会到手机"):
+                    ok, _ = NotificationService.send_feishu(feishu_url, "机会扫描提醒", scan_content) # 以飞书为例
+                    if ok: st.toast("机会已发送")
             else:
                 st.info("暂无高分信号。"); st.session_state.scan_results = []
 
@@ -1592,12 +1601,20 @@ def render_dashboard():
     action_container = st.container(border=True)
     
     with action_container:
-        # 1. 扫描持仓警报
+       # 1. 扫描持仓警报 (包含诊断逻辑)
         alerts = []
-        # 使用缓存的行情数据，避免重复请求
         for h in pm.data['holdings']:
-            curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
+            curr_p, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
             
+            # --- 新增：实时波浪诊断检查 ---
+            if not df.empty:
+                df_calc = IndicatorEngine.calculate_indicators(df)
+                pivots = WaveEngine.zig_zag(df_calc['nav'][-100:])
+                res = WaveEngine.analyze_structure(df_calc, pivots)
+                
+                # 如果诊断结果为 Sell，加入警报
+                if res['status'] == 'Sell':
+                    alerts.append(f"🚨 **诊断卖出**: {h['name']} ({res['desc']})")
             # 止损/止盈检查
             if h.get('stop_loss', 0) > 0 and curr_p < h['stop_loss']:
                 alerts.append(f"🔴 **止损触发**: {h['name']} (现价 {curr_p:.4f} < 止损 {h['stop_loss']:.4f})")
