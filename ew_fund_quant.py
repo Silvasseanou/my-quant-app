@@ -179,7 +179,7 @@ class Holding:
         try:
             buy_date_str = self.lots[0].date.split(' ')[0]
             buy_date = datetime.datetime.strptime(buy_date_str, "%Y-%m-%d").date()
-            return (datetime.date.today() - buy_date).days
+            return (get_bj_time().date() - buy_date).days
         except:
             return 0
 
@@ -280,7 +280,7 @@ class DataService:
         est_p, _, _ = DataService.get_realtime_estimate(code)
         
         curr_price = cost_basis 
-        today_str = datetime.date.today().strftime("%Y-%m-%d")
+        today_str = get_bj_time().date().strftime("%Y-%m-%d")
         used_est = False
         
         if not df.empty:
@@ -1024,7 +1024,7 @@ class PortfolioManager:
         return settle_date
 
     def settle_orders(self):
-        today = datetime.date.today()
+        today = get_bj_time().date()
         new_pending = []
         settled_count = 0
         
@@ -1065,7 +1065,7 @@ class PortfolioManager:
                 
                 exec_price = order.get('cost', 0.0)
                 self.data['history'].append({
-                    "date": str(datetime.datetime.now())[:19],
+                    "date": str(get_bj_time())[:19],
                     "action": "CONFIRM",
                     "code": order['code'],
                     "name": order['name'],
@@ -1119,7 +1119,7 @@ class PortfolioManager:
 
     def execute_buy(self, code, name, price, amount, stop_loss, target, reason):
         if self.data['capital'] < amount: return False, "可用资金不足"
-        now = datetime.datetime.now()
+        now = get_bj_time()
         settlement_date = self._get_settlement_date(now)
         shares = amount / price
         self.data['capital'] -= amount
@@ -1164,7 +1164,7 @@ class PortfolioManager:
         total_revenue = 0.0
         total_fee = 0.0
         total_cost_basis = 0.0
-        today = datetime.date.today()
+        today = get_bj_time().date()
         
         temp_lots = [lot.copy() for lot in lots]
         used_lots_indices = [] 
@@ -1209,7 +1209,7 @@ class PortfolioManager:
             
         fee_note = f" (含惩罚费 ¥{total_fee:.2f})" if total_fee > 0 else ""
         self.data['history'].append({
-            "date": f"{str(datetime.datetime.now())[:19]}", 
+            "date": f"{str(get_bj_time())[:19]}", 
             "action": "SELL", 
             "code": code, "name": h['name'], "price": price, 
             "amount": total_revenue, "reason": f"{reason}{fee_note} | 赎回确认", 
@@ -1221,7 +1221,7 @@ class PortfolioManager:
     def execute_deposit(self, amount, note="账户入金"):
         if amount <= 0: return False, "金额必须大于0"
         self.data['capital'] += amount
-        now = datetime.datetime.now()
+        now = get_bj_time()
         self.data['history'].append({
             "date": f"{str(now.date())} {now.strftime('%H:%M:%S')}", 
             "action": "DEPOSIT", 
@@ -1236,7 +1236,7 @@ class PortfolioManager:
         检查僵尸持仓: 持有时间 > 40天 且 收益率在 +/- 3% 之间
         """
         dead_positions = []
-        today_dt = datetime.date.today()
+        today_dt = get_bj_time().date()
         
         for h in self.data['holdings']:
             # 获取最新价格
@@ -1410,7 +1410,7 @@ def render_dashboard():
         test_df = DataService.fetch_nav_history("000300")
         if not test_df.empty:
             last_date_str = str(test_df.index[-1].date())
-            today_str = str(datetime.date.today())
+            today_str = str(get_bj_time().date())
             if last_date_str == today_str:
                 st.caption(f"📅 数据更新至: {last_date_str} (✅ 最新)")
             else:
@@ -1442,7 +1442,7 @@ def render_dashboard():
         
         st.caption(f"当前可用资金: ¥{pm.data['capital']:,.0f}")
         
-        now = datetime.datetime.now()
+        now = get_bj_time()
         is_trading_day = now.weekday() < 5 
         is_before_3pm = now.hour < 15
         trade_status = "🟢 盘中" if (is_trading_day and is_before_3pm) else "🔴 盘后"
@@ -1612,7 +1612,7 @@ def render_dashboard():
         st.subheader("1. 实时风险监控 (Risk Monitor)")
         monitor_container = st.container()
         sell_alerts = []
-        now_str = datetime.datetime.now().strftime("%H:%M:%S")
+        now_str = get_bj_time().strftime("%H:%M:%S")
         
         if holdings:
             with st.spinner(f"正在扫描 {len(holdings)} 个持仓的实时风险..."):
@@ -1835,7 +1835,7 @@ def render_dashboard():
                     
                     lots = h.get('lots', [])
                     penalty_shares = 0
-                    today_dt = datetime.date.today()
+                    today_dt = get_bj_time().date()
                     for lot in lots:
                         l_date = datetime.datetime.strptime(lot['date'].split(' ')[0], "%Y-%m-%d").date()
                         if (today_dt - l_date).days < 7: penalty_shares += lot['shares']
@@ -1880,14 +1880,14 @@ def render_dashboard():
             st.dataframe(df_hist, height=300, use_container_width=True)
             # 导出功能
             csv = df_hist.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 导出流水 (Excel/CSV)", data=csv, file_name=f"trade_history_{datetime.date.today()}.csv", mime="text/csv")
+            st.download_button("📥 导出流水 (Excel/CSV)", data=csv, file_name=f"trade_history_{get_bj_time().date()}.csv", mime="text/csv")
 
     with tab3:
         st.header("📊 策略时光机 & 压力测试")
         mode = st.radio("选择回测模式", ["单只基金 (压力测试)", "时光机 (组合回测)", "⚔️ 策略 PK (控制变量法)", "📅 择时分析 (入场点全景图)"], horizontal=True)
         col_d1, col_d2 = st.columns(2)
         start_d = col_d1.date_input("开始日期", datetime.date(2022, 1, 1))
-        end_d = col_d2.date_input("结束日期", datetime.date.today())
+        end_d = col_d2.date_input("结束日期", get_bj_time().date())
 
         if "PK" in mode:
             st.subheader("⚔️ 策略竞技场")

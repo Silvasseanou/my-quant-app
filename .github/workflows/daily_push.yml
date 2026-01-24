@@ -1,0 +1,27 @@
+name: Daily_Market_Push
+
+on:
+  schedule:
+    # cron 表达式是 UTC 时间：
+    # 11:00 北京 = 03:00 UTC
+    # 14:30 北京 = 06:30 UTC
+    - cron: '0 3 * * *'
+    - cron: '30 6 * * *'
+  workflow_dispatch: # 允许手动点击按钮测试
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: pip install requests supabase pytz akshare pandas
+      - name: Run Market Scan
+        run: python bot_cron.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}

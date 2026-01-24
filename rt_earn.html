@@ -147,7 +147,7 @@ class ElliottWaveAnalyzer:
         est_nav = realtime_info.get('est_nav', 0)
         
         if est_nav <= 0: return df, False
-        today = pd.Timestamp(datetime.date.today())
+        today = pd.Timestamp(get_bj_time().date())
         
         # 简单判断：如果历史数据不是今天的，就把今天的估值接上去
         if last_date < today:
@@ -216,7 +216,7 @@ class ElliottWaveAnalyzer:
         for r in ratios:
             delta = int(wave_duration_days * r)
             target_date = last_pivot['date'] + datetime.timedelta(days=delta)
-            if target_date >= datetime.datetime.now(): 
+            if target_date >= get_bj_time(): 
                 projected_dates.append((f"{r}倍", target_date.strftime('%Y-%m-%d')))
         return projected_dates
 
