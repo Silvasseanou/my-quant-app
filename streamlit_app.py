@@ -20,9 +20,11 @@ from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def get_bj_time():
+# 修改位置：脚本顶部
+def get_beijing_time():
+    """无论服务器在哪，永远返回北京时间"""
     tz = pytz.timezone('Asia/Shanghai')
-    return datetime.now(tz) # 注意这里少了一个 .datetime
+    return datetime.datetime.now(tz)
 
 # === 全局配置 ===
 st.set_page_config(layout="wide", page_title="Elliott Wave Mobile Full (v37.0)", page_icon="🌊", initial_sidebar_state="expanded")
