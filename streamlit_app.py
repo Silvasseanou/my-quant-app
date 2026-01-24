@@ -1053,22 +1053,15 @@ class PortfolioManager:
         self.settle_orders()
 
     def load(self):
-        """从 Supabase 云端读取数据"""
+        """从 Supabase 云端读取数据（已移除本地迁移逻辑）"""
         try:
-            # 查询 trader_storage 表中对应 ID 的 portfolio_data 列
+            # 1. 直接查询云端
             res = self.conn.table("trader_storage").select("portfolio_data").eq("id", self.user_id).execute()
-            if (not res.data or len(res.data) == 0) and os.path.exists(self.file):
-                with open(self.file, 'r', encoding='utf-8') as f:
-                    local_data = json.load(f)
-                self.data = local_data
-                self.save() # 将本地 JSON 推送到云端
-                st.success("✅ 已从本地 JSON 成功迁移历史记录至云端！")
-                return local_data
-                
+            
             if res.data and len(res.data) > 0:
                 data = res.data[0]['portfolio_data']
                 
-                # --- 以下为原有兼容性处理逻辑 ---
+                # --- 核心兼容性保持（防止字段缺失报错） ---
                 if "pending_orders" not in data: data["pending_orders"] = []
                 if "history" not in data: data["history"] = []
                 if "capital" not in data: data["capital"] = DEFAULT_CAPITAL
@@ -1078,15 +1071,13 @@ class PortfolioManager:
                         h["lots"] = [{"date": "2020-01-01", "shares": h["shares"], "cost_per_share": h["cost"]}]
                 return data
             else:
-                # 如果数据库是空的，初始化一个默认数据并存进去
+                # 2. 如果云端完全没数据，则初始化
                 default_data = {"capital": DEFAULT_CAPITAL, "holdings": [], "history": [], "pending_orders": []}
-                self.data = default_data
-                self.save()
+                # 这里不需要立即 save，让后续操作触发即可，或者保留 save 以便立即创建记录
                 return default_data
                 
         except Exception as e:
             st.error(f"☁️ 云端数据读取失败: {e}")
-            # 读取失败时返回内存默认值，防止程序崩溃
             return {"capital": DEFAULT_CAPITAL, "holdings": [], "history": [], "pending_orders": []}
 
     def save(self):
@@ -1401,6 +1392,18 @@ def render_dashboard():
     pm = st.session_state.pm
     pm.data = pm.load() 
     
+    with st.sidebar.expander("🛠️ 数据库手动修复", expanded=False):
+        raw_json = st.text_area("请粘贴 JSON 内容进行强制覆盖")
+        if st.button("🚀 强制覆盖云端数据库"):
+            try:
+                import json
+                new_data = json.loads(raw_json)
+                st.session_state.pm.data = new_data
+                st.session_state.pm.save()
+                st.success("覆盖成功！请刷新页面并删除此代码块。")
+            except:
+                st.error("JSON 格式错误")
+
     # === 侧边栏: 推送控制 ===
     with st.sidebar:
         st.header("📱 飞书推送中心")
