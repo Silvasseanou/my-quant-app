@@ -10,41 +10,41 @@ import numpy as np
 import akshare as ak
 from supabase import create_client
 
-# === 1. 核心配置 (从 GitHub Secrets 读取) ===
+# === 1. 核心配置 ===
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 FEISHU_HOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/31bb5f01-1e8b-4b08-8824-d634b95329e8"
 
-# === 2. 基础服务类 ===
-
 def get_bj_time():
-    """强制获取北京时间"""
+    """强制北京时间"""
     return datetime.datetime.now(pytz.timezone('Asia/Shanghai'))
 
+# === 2. 核心引擎类 ===
 class IndicatorEngine:
     @staticmethod
     def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
         if df.empty: return df
         data = df.copy()
+        # 均线系统
         data['ema_21'] = data['nav'].ewm(span=21, adjust=False).mean()
         data['ema_55'] = data['nav'].ewm(span=55, adjust=False).mean()
         data['ema_89'] = data['nav'].ewm(span=89, adjust=False).mean()
+        # 通道系统
         data['high_20'] = data['nav'].rolling(window=20).max()
         data['low_20'] = data['nav'].rolling(window=20).min()
-        data['tr'] = data['nav'].diff().abs()
-        data['atr'] = data['tr'].rolling(window=14).mean()
+        # 动能系统
         data['ao'] = data['nav'].rolling(window=5).mean() - data['nav'].rolling(window=34).mean()
         data['ao_prev'] = data['ao'].shift(1)
+        # 波动率 ATR
+        data['tr'] = data['nav'].diff().abs()
+        data['atr'] = data['tr'].rolling(window=14).mean()
         return data
 
 class DataService:
     @staticmethod
     def fetch_nav_history(code):
         try:
-            for _ in range(3):
-                df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
-                if not df.empty: break
-                time.sleep(1)
+            df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
             if df.empty: return pd.DataFrame()
             df = df.rename(columns={"净值日期": "date", "单位净值": "nav"})
             df['date'] = pd.to_datetime(df['date'])
@@ -56,32 +56,20 @@ class DataService:
 
     @staticmethod
     def get_realtime_estimate(code):
+        """抓取实时估值"""
         try:
-            ts = int(time.time() * 1000)
-            url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={ts}"
+            url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={int(time.time())}"
             r = requests.get(url, timeout=3)
-            if r.status_code == 200:
-                match = re.findall(r'\((.*?)\)', r.text)
-                if match:
-                    data = json.loads(match[0])
-                    return float(data['gsz']), float(data['gszzl'])
+            match = re.findall(r'\((.*?)\)', r.text)
+            if match:
+                data = json.loads(match[0])
+                return float(data['gsz']), float(data['gszzl'])
             return None, None
         except: return None, None
 
     @staticmethod
-    def get_smart_price_for_cron(code):
-        df = DataService.fetch_nav_history(code)
-        est_p, _ = DataService.get_realtime_estimate(code)
-        if df.empty: return est_p or 0, df
-        if est_p:
-            last_date = df.index[-1]
-            if last_date.date() < get_bj_time().date():
-                new_row = pd.DataFrame({'nav': [est_p]}, index=[last_date + datetime.timedelta(days=1)])
-                df = pd.concat([df, new_row])
-        return df['nav'].iloc[-1], df
-
-    @staticmethod
     def get_market_wide_pool():
+        """获取全市场 Top 300 品种"""
         try:
             df = ak.fund_open_fund_rank_em(symbol="全部")
             mask = df['基金简称'].str.contains('债|货币|理财|定开|持有|养老|以太|比特', regex=True) == False
@@ -100,110 +88,132 @@ class WaveEngine:
         ao_curr = df_slice['ao'].iloc[-1]
         ao_prev = df_slice['ao_prev'].iloc[-1]
         
-        if last_nav < ema89:
-            return {'status': 'Sell', 'score': -100, 'desc': '破位：跌破 EMA89 生命线'}
-        if last_nav < low_20:
-            return {'status': 'Sell', 'score': -90, 'desc': '破位：跌破 20 日支撑'}
+        # 卖出判定
+        if last_nav < ema89: return {'status': 'Sell', 'score': -100, 'desc': '破位：跌破生命线(EMA89)'}
+        if last_nav < low_20: return {'status': 'Sell', 'score': -90, 'desc': '破位：跌破20日新低支撑'}
+        
+        # 买入判定
         if last_nav > high_20:
             if ao_curr > 0 and ao_curr > ao_prev:
                 return {'status': 'Buy', 'score': 85, 'desc': '突破：20日新高 + 动能确认 (浪3特征)'}
-            return {'status': 'Buy', 'score': 70, 'desc': '突破：20日新高 (待放量)'}
-        return {'status': 'Hold', 'score': 50, 'desc': '震荡运行中'}
+            return {'status': 'Buy', 'score': 75, 'desc': '突破：20日新高 (等待动能放量)'}
+        return {'status': 'Hold', 'score': 50, 'desc': '震荡整理中'}
 
-# === 3. 自动化任务执行 ===
-
-def run_daily_mission():
+# === 3. 执行逻辑 ===
+def run_cron_mission():
     bj_now = get_bj_time()
-    print(f"🚀 开始定时巡检: {bj_now.strftime('%Y-%m-%d %H:%M:%S')}")
-    
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     res = supabase.table("trader_storage").select("portfolio_data").eq("id", "default_user").execute()
     
-    if not res.data:
-        print("❌ 未发现用户数据")
-        return
+    portfolio = res.data[0]['portfolio_data'] if res.data else {}
     
-    portfolio = res.data[0]['portfolio_data']
-    holdings = portfolio.get('holdings', [])
+    # 获取不同类型的池子
+    real_holdings = portfolio.get('holdings', [])
+    pending_list = portfolio.get('pending_orders', []) 
+    
     capital = portfolio.get('capital', 20000)
-    
-    report_sections = []
+    sections = []
 
-    # --- A. 持仓风险诊断 ---
+    # --- A. 深度风控巡检 (涵盖持仓 & 模拟交易台) ---
     sell_alerts = []
-    print(f"正在诊断 {len(holdings)} 只持仓...")
-    for h in holdings:
-        price, df = DataService.get_smart_price_for_cron(h['code'])
-        if not df.empty:
-            df = IndicatorEngine.calculate_indicators(df)
-            analysis = WaveEngine.analyze_structure(df)
-            if h.get('stop_loss', 0) > 0 and price < h['stop_loss']:
-                sell_alerts.append(f"🔴 **止损触发**: {h['name']} (现价{price:.4f} < 止损{h['stop_loss']:.4f})")
-            elif analysis['status'] == 'Sell':
-                sell_alerts.append(f"🚨 **卖点预警**: {h['name']} ({analysis['desc']})")
-                
-    if sell_alerts:
-        report_sections.append("🔥 **持仓风险项**\n" + "\n".join(sell_alerts))
-    else:
-        report_sections.append("✅ **持仓状态**: 目前持仓基金表现稳定，未触发卖出信号。")
+    scan_pool = [
+        {"data": h, "type": "实盘持仓"} for h in real_holdings
+    ] + [
+        {"data": p, "type": "模拟交易"} for p in pending_list
+    ]
 
-    # --- B. 全市场激进扫描 (去重版) ---
-    print("正在扫描全市场机会...")
+    for item in scan_pool:
+        h = item['data']
+        h_type = item['type']
+        
+        est_p, _ = DataService.get_realtime_estimate(h['code'])
+        df = DataService.fetch_nav_history(h['code'])
+        
+        if est_p: 
+            new_row = pd.DataFrame({'nav': [est_p]}, index=[bj_now])
+            df = pd.concat([df, new_row])
+            
+        df = IndicatorEngine.calculate_indicators(df)
+        ans = WaveEngine.analyze_structure(df)
+        
+        price_now = est_p or (df['nav'].iloc[-1] if not df.empty else 0)
+        
+        # 判定 Sell 信号
+        is_wave_sell = ans['status'] == 'Sell'
+        is_stop_loss = h.get('stop_loss', 0) > 0 and price_now < h['stop_loss']
+        
+        if is_wave_sell or is_stop_loss:
+            reason = ans['desc'] if is_wave_sell else f"跌破止损位({h['stop_loss']})"
+            sell_alerts.append(f"🚨 **[{h_type}] 卖出建议**: {h['name']} ({h['code']})\n   • 现价:{price_now:.4f} | 原因: {reason}")
+    
+    # 构造预警板块内容
+    if sell_alerts:
+        sections.append("🔥 **持仓/模拟风控预警**\n" + "\n".join(sell_alerts))
+    else:
+        sections.append("✅ **风险巡检**: 当前持仓及模拟交易台表现正常，未发现 Sell 卖出信号。")
+
+    # --- B. 全市场雷达 (Top 15 & 合并 A/C) ---
     buy_opps = []
+    seen_base_names = set()
     market_pool = DataService.get_market_wide_pool()
-    seen_names = set() # 用于 A/C 类合并
     
     for fund in market_pool:
-        # 合并去重逻辑：取基金名称前5个字符进行匹配
-        base_name = re.sub(r'[AC]$', '', fund['name']).strip()
-        if base_name in seen_names: continue
+        base_name = re.sub(r'(联接)?[ABC]$|指数[ABC]$|主题[ABC]$|混合[ABC]$|ETF(联接)?', '', fund['name']).strip()
+        if base_name in seen_base_names: continue
         
-        _, df_m = DataService.get_smart_price_for_cron(fund['code'])
-        if len(df_m) > 60:
-            df_m = IndicatorEngine.calculate_indicators(df_m)
-            analysis_m = WaveEngine.analyze_structure(df_m)
-            
-            if analysis_m['status'] == 'Buy' and analysis_m['score'] >= 80:
-                total_assets = capital + sum([h['shares'] * h['cost'] for h in holdings])
-                suggest_amt = total_assets * 0.1
-                buy_opps.append(
-                    f"✅ **{fund['name']}** ({fund['code']})\n"
-                    f"   • 评分: {analysis_m['score']} | 建议买入: ¥{suggest_amt:,.0f}\n"
-                    f"   • 原因: {analysis_m['desc']}"
-                )
-                seen_names.add(base_name)
+        est_m, _ = DataService.get_realtime_estimate(fund['code'])
+        df_m = DataService.fetch_nav_history(fund['code'])
+        if est_m and not df_m.empty:
+            new_row = pd.DataFrame({'nav': [est_m]}, index=[bj_now])
+            df_m = pd.concat([df_m, new_row])
         
-        if len(buy_opps) >= 15: break # 满 15 个停止
+        df_m = IndicatorEngine.calculate_indicators(df_m)
+        ans_m = WaveEngine.analyze_structure(df_m)
+        
+        if ans_m['status'] == 'Buy' and ans_m['score'] >= 80:
+            total_assets = capital + sum([h['shares'] * h['cost'] for h in real_holdings])
+            suggest_amt = total_assets * 0.1
+            buy_opps.append(f"✅ **{fund['name']}** ({fund['code']})\n   • 评分: {ans_m['score']} | 建议单位: ¥{suggest_amt:,.0f}\n   • 原因: {ans_m['desc']}")
+            seen_base_names.add(base_name)
+        
+        if len(buy_opps) >= 15: break
 
-    if buy_opps:
-        report_sections.append(f"🔭 **选股雷达 (强动能 Top 15)**\n" + "\n".join(buy_opps))
-    else:
-        report_sections.append("🔭 **选股雷达**: 扫描了 Top 300 品种，暂未发现符合买入标准的强力信号。")
+    sections.append(f"🔭 **选股雷达 (Top 15)**\n" + ("\n".join(buy_opps) if buy_opps else "⚪ 暂无符合突破条件的强信号。"))
 
-    # --- C. 组装并发送飞书 ---
-    content = "\n\n---\n\n".join(report_sections)
+    # --- C. 飞书卡片组装 ---
+    content = "\n\n---\n\n".join(sections)
     template = "red" if sell_alerts else "blue"
     
     payload = {
         "msg_type": "interactive",
         "card": {
-            "header": {
-                "template": template,
-                "title": {"content": f"🌊 波浪策略定时报告 ({bj_now.strftime('%H:%M')})", "tag": "plain_text"}
-            },
+            "header": {"title": {"content": f"🌊 波浪策略巡检 ({bj_now.strftime('%H:%M')})", "tag": "plain_text"}, "template": template},
             "elements": [
                 {"tag": "div", "text": {"content": content, "tag": "lark_md"}},
                 {"tag": "hr"},
-                {"tag": "note", "elements": [{"content": f"持仓: {len(holdings)} | 现金: ¥{capital:,.0f} | 建议以 Kelly 公式为准", "tag": "plain_text"}]}
+                {"tag": "note", "elements": [{"content": f"账户现金: ¥{capital:,.0f} | 实盘持仓: {len(real_holdings)}只 | 模拟交易台: {len(pending_list)}只 | 本次扫描: Top 300 品种", "tag": "plain_text"}]}
             ]
         }
     }
     
-    try:
-        requests.post(FEISHU_HOOK, json=payload, timeout=15)
-        print("✅ 报告已推送到飞书")
-    except Exception as e:
-        print(f"❌ 推送失败: {e}")
+    requests.post(FEISHU_HOOK, json=payload, timeout=20)
 
+# === 4. 主入口（带异常兜底） ===
 if __name__ == "__main__":
-    run_daily_mission()
+    try:
+        run_cron_mission()
+    except Exception as e:
+        # 兜底报错，防止脚本静默失效
+        # 增加超时和异常捕获，避免报错推送本身失败
+        try:
+            requests.post(
+                FEISHU_HOOK, 
+                json={
+                    "msg_type": "text", 
+                    "content": {"text": f"❌ 巡检脚本运行故障: {str(e)}\n🕒 故障时间: {get_bj_time().strftime('%Y-%m-%d %H:%M:%S')}"}
+                },
+                timeout=10
+            )
+        except:
+            # 极端情况：推送报错也失败，打印到终端
+            print(f"脚本运行失败，且报错推送失败！错误信息: {e}")
