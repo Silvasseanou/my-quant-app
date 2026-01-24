@@ -1390,19 +1390,7 @@ def render_dashboard():
         st.session_state.pm = PortfolioManager()
     
     pm = st.session_state.pm
-    pm.data = pm.load() 
-    
-    with st.sidebar.expander("🛠️ 数据库手动修复", expanded=False):
-        raw_json = st.text_area("请粘贴 JSON 内容进行强制覆盖")
-        if st.button("🚀 强制覆盖云端数据库"):
-            try:
-                import json
-                new_data = json.loads(raw_json)
-                st.session_state.pm.data = new_data
-                st.session_state.pm.save()
-                st.success("覆盖成功！请刷新页面并删除此代码块。")
-            except:
-                st.error("JSON 格式错误")
+    pm.data = pm.load()
 
     # === 侧边栏: 推送控制 ===
     with st.sidebar:
