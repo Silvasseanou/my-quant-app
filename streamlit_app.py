@@ -1685,7 +1685,7 @@ def render_dashboard():
                     st.markdown(f"### 建议: :{advice_color}[{res['status']}]")
                     st.write(f"**分析**: {res['desc']}")
                 fig = plot_wave_chart(df_calc.iloc[-120:], pivots, f"{item['name']} 结构图", cost=item['cost'])
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key=f"diag_chart_{item['code']}_{i}")
 
     with tab2:
         st.header("💼 模拟交易台")
