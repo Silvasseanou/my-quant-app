@@ -1231,10 +1231,17 @@ class PortfolioManager:
         """卖出逻辑：包含惩罚费计算，并将记录同步到云端、流水及飞书"""
         idx = -1
         for i, h in enumerate(self.data['holdings']):
-            if h['code'] == code: idx = i; break
-        if idx == -1: return False, "持仓中未找到该基金"
+            if h['code'] == code: 
+                idx = i
+                break
         
+        if idx == -1: 
+            return False, "持仓中未找到该基金"
+        
+        # 锁定当前持仓对象
         h = self.data['holdings'][idx]
+        fund_name = h['name']  # 提前取出名称，防止 pop 后引用报错
+        
         total_shares_to_sell = h['shares'] 
         lots = h.get('lots', [{"date": "2020-01-01", "shares": total_shares_to_sell, "cost_per_share": h['cost']}])
         lots.sort(key=lambda x: x['date']) 
@@ -1246,12 +1253,14 @@ class PortfolioManager:
         temp_lots = [lot.copy() for lot in lots]
         used_lots_indices, penalty_shares = [], 0 
         
-        # 1. 核心计算逻辑：处理批次、惩罚费、收益率
+        # 1. 核心计算逻辑
         for i, lot in enumerate(temp_lots):
             if remaining_sell <= 0: break
             can_sell = min(remaining_sell, lot['shares'])
             buy_date = datetime.datetime.strptime(lot['date'].split(' ')[0], "%Y-%m-%d").date()
             hold_days = (today - buy_date).days
+            
+            # 惩罚费判断
             fee_rate = 0.015 if hold_days < 7 else 0.0
             if fee_rate > 0: penalty_shares += can_sell
             
@@ -1260,50 +1269,55 @@ class PortfolioManager:
             total_fee += fee_val
             total_cost_basis += can_sell * lot['cost_per_share']
             remaining_sell -= can_sell
-            if can_sell == lot['shares']: used_lots_indices.append(i) 
-            else: temp_lots[i]['shares'] -= can_sell
+            
+            if abs(can_sell - lot['shares']) < 1e-6: 
+                used_lots_indices.append(i) 
+            else: 
+                temp_lots[i]['shares'] -= can_sell
         
-        # 2. 软确认：如果满 7 天惩罚费警告（除非 force=True）
+        # 2. 软确认
         if penalty_shares > 0 and not force:
              return False, f"检测到 {penalty_shares:.2f} 份持仓不足7天，将收取惩罚费 ¥{total_fee:.2f}。请再次点击卖出确认。"
         
-        # 3. 执行资金变动
-        self.data['capital'] += total_revenue
-        new_lots = [lot for i, lot in enumerate(temp_lots) if i not in used_lots_indices]
+        # 3. 执行资金变动（核心：确保这一步生效）
+        self.data['capital'] = float(self.data['capital']) + float(total_revenue)
         
-        # 4. 计算盈亏金额与百分比（用于流水和战报）
+        # 4. 计算盈亏
         pnl_val = total_revenue - total_cost_basis
         pnl_pct = pnl_val / total_cost_basis if total_cost_basis > 0 else 0
         
         # 5. 更新持仓数据
+        new_lots = [lot for i, lot in enumerate(temp_lots) if i not in used_lots_indices]
         if not new_lots: 
             self.data['holdings'].pop(idx)
         else:
-            h['lots'], h['shares'] = new_lots, sum(l['shares'] for l in new_lots)
+            h['lots'] = new_lots
+            h['shares'] = sum(l['shares'] for l in new_lots)
             h['cost'] = sum(l['shares'] * l['cost_per_share'] for l in new_lots) / h['shares']
             self.data['holdings'][idx] = h
             
-        # 6. 【重要】记录同步到历史流水
+        # 6. 记录历史流水
         fee_note = f" (含惩罚费 ¥{total_fee:.2f})" if total_fee > 0 else ""
         self.data['history'].append({
             "date": get_bj_time().strftime('%Y-%m-%d %H:%M:%S'), 
             "action": "SELL", 
             "code": code, 
-            "name": h['name'], 
-            "price": price, 
-            "amount": total_revenue, 
+            "name": fund_name, 
+            "price": float(price), 
+            "amount": float(total_revenue), 
             "reason": f"{reason}{fee_note}", 
-            "pnl": pnl_val
+            "pnl": float(pnl_val)
         })
         
-        # 7. 同步到云端 Supabase
+        # 7. 立即持久化保存
         self.save()
 
-        # 8. 实时反馈：Toast 提示与飞书推送
-        st.toast(f"✅ 已记录卖出流水: {h['name']}", icon="📈")
+        # 8. 实时反馈
+        st.toast(f"✅ 已完成平仓: {fund_name}", icon="💰")
         
+        # 飞书推送逻辑保持不变...
         pnl_icon = "🔴" if pnl_val < 0 else "🟢"
-        fs_title = f"{pnl_icon} 平仓战报: {h['name']}"
+        fs_title = f"{pnl_icon} 平仓战报: {fund_name}"
         fs_content = (
             f"**动作**: 卖出平仓\n"
             f"**净值**: {price:.4f}\n"
@@ -1313,7 +1327,7 @@ class PortfolioManager:
         )
         NotificationService.send_feishu(fs_title, fs_content)
         
-        return True, f"卖出成功，收益 ¥{pnl_val:+.2f} {fee_note}"
+        return True, f"卖出成功，回笼资金 ¥{total_revenue:,.2f}"
 
     def execute_deposit(self, amount, note="账户入金"):
         """入金逻辑保持不变"""
