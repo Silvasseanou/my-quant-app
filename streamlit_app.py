@@ -1946,11 +1946,48 @@ def render_dashboard():
         
         st.subheader("📜 交易流水")
         if history:
+            # 1. 倒序排列，让最新的在上面
+            hist_list = list(reversed(history))
+            
+            # 2. 增加一个“清理所有”按钮（可选）
+            if st.button("🧹 清空所有流水记录", type="secondary"):
+                pm.data['history'] = []
+                pm.save()
+                st.rerun()
+
+            st.markdown("---")
+            
+            # 3. 循环显示每一条流水
+            for idx, item in enumerate(hist_list):
+                # 真实的索引（因为 hist_list 是倒序的）
+                real_idx = len(history) - 1 - idx
+                
+                hc1, hc2, hc3 = st.columns([2, 5, 1])
+                
+                # 第一列：动作和时间
+                action_color = "red" if "SELL" in item['action'] or "WITHDRAW" in item['action'] else "green"
+                hc1.markdown(f"**:{action_color}[{item['action']}]**")
+                hc1.caption(f"{item['date'].split(' ')[0]}") # 只显示日期
+                
+                # 第二列：详细内容
+                pnl_str = f" | 盈亏: {item['pnl']:+.2f}" if item.get('pnl', 0) != 0 else ""
+                hc2.write(f"**{item['name']}** ({item['code']})")
+                hc2.caption(f"价格: {item['price']:.4f} | 金额: ¥{item['amount']:,.2f}{pnl_str}")
+                hc2.info(f"备注: {item['reason']}")
+                
+                # 第三列：删除按钮
+                if hc3.button("🗑️", key=f"hist_del_{real_idx}", help="删除此条流水"):
+                    pm.data['history'].pop(real_idx)
+                    pm.save() # 同步到云端
+                    st.toast("流水记录已删除")
+                    time.sleep(0.5)
+                    st.rerun()
+                st.divider()
+            
+            # 导出功能保持不变
             df_hist = pd.DataFrame(history).iloc[::-1]
-            st.dataframe(df_hist, height=300, use_container_width=True)
-            # 导出功能
             csv = df_hist.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 导出流水 (Excel/CSV)", data=csv, file_name=f"trade_history_{get_bj_time().date()}.csv", mime="text/csv")
+            st.download_button("📥 导出流水 (CSV)", data=csv, file_name=f"trade_history_{get_bj_time().date()}.csv", mime="text/csv")
 
     with tab3:
         st.header("📊 策略时光机 & 压力测试")
