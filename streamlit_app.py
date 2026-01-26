@@ -1116,8 +1116,13 @@ class PortfolioManager:
         return settle_date
 
     def settle_orders(self):
-        """在途订单结算逻辑保持不变，最后的 self.save() 会触发云端更新"""
-        today = get_bj_time().date() # 建议使用之前改好的北京时间函数
+        """
+        结算逻辑真实还原：
+        1. 锁定下单时的成本价（est_price），不再随确认净值而修正。
+        2. 仅根据真实净值修正你实际获得的份额。
+        3. 使下单到确认期间的波动，真实地体现在该基金的“持仓盈亏”中。
+        """
+        today = get_bj_time().date()
         new_pending = []
         settled_count = 0
         
@@ -1134,30 +1139,44 @@ class PortfolioManager:
                 real_nav = 0.0
                 correction_msg = ""
                 try:
+                    # 真实世界中，基金公司按 T 日收盘净值给你算份额
                     df_nav = DataService.fetch_nav_history(order['code'])
                     trade_date_dt = pd.to_datetime(order['date']) 
                     if not df_nav.empty and trade_date_dt in df_nav.index:
                         real_nav = float(df_nav.loc[trade_date_dt]['nav'])
                 except: pass
 
+                # 【下单决策价】这是你点下按钮时的预估价格
                 est_price = order.get('cost', order.get('price', 0.0))
-                if real_nav > 0 and abs(real_nav - est_price) > 0.0001:
+                
+                if real_nav > 0:
                     buy_amount = order['amount']
+                    # 真实份额计算：你掏了1000元，基金公司按 real_nav 给你份额
                     order['shares'] = buy_amount / real_nav
-                    order['cost'] = real_nav 
-                    correction_msg = f" | 净值修正: {est_price:.4f}->{real_nav:.4f}"
+                    
+                    # === 真实化核心：成本锁定 ===
+                    # 保持 order['cost'] = est_price (下单价) 不动！
+                    # 这样该基金一出现在持仓，浮盈 = (当前净值 - 下单价) * 份额
+                    # 如果下单到确认期间跌了，它一进场就是“亏损”状态。
+                    
+                    if abs(real_nav - est_price) > 0.0001:
+                        # 计算这段“在途期间”的真实盈亏损耗
+                        friction_pnl = (real_nav - est_price) * order['shares']
+                        correction_msg = f" | 估值偏差: {est_price:.4f}->{real_nav:.4f} (入场损耗: ¥{friction_pnl:+.2f})"
 
+                # 将带有“决策成本”和“真实份额”的订单转入持仓
                 self._add_to_holdings(order)
                 settled_count += 1
+                
                 self.data['history'].append({
                     "date": get_bj_time().strftime('%Y-%m-%d %H:%M:%S'),
                     "action": "CONFIRM",
                     "code": order['code'],
                     "name": order['name'],
-                    "price": order['cost'],
+                    "price": real_nav, # 流水记录真实的成交价格
                     "amount": 0,
                     "reason": f"份额确认 (T+1){correction_msg}", 
-                    "pnl": 0
+                    "pnl": 0 # 此处不计入平仓盈亏，它已转化为持仓里的浮动盈亏
                 })
             else:
                 new_pending.append(order)
@@ -1165,39 +1184,6 @@ class PortfolioManager:
         if settled_count > 0:
             self.data["pending_orders"] = new_pending
             self.save()
-            
-    def _add_to_holdings(self, order):
-        """添加持仓逻辑保持不变"""
-        code = order['code']
-        shares = order['shares']
-        price = order.get('cost', order.get('price', 0.0))
-        date_str = order['date'] 
-        
-        existing_idx = -1
-        for i, h in enumerate(self.data['holdings']):
-            if h['code'] == code: existing_idx = i; break
-            
-        new_lot = {"date": date_str, "shares": shares, "cost_per_share": price}
-        
-        if existing_idx >= 0:
-            existing = self.data['holdings'][existing_idx]
-            total_shares_old = existing['shares']
-            total_cost_old = existing['cost'] * total_shares_old
-            new_total_shares = total_shares_old + shares
-            existing['shares'] = new_total_shares
-            existing['cost'] = (total_cost_old + (shares * price)) / new_total_shares if new_total_shares > 0 else 0
-            if "lots" not in existing: existing["lots"] = []
-            existing['lots'].append(new_lot)
-        else:
-            self.data['holdings'].append({
-                "code": code, "name": order['name'], 
-                "shares": shares, "cost": price, 
-                "date": date_str, 
-                "stop_loss": order.get('stop_loss', 0), 
-                "target": order.get('target', 0), 
-                "partial_sold": False,
-                "lots": [new_lot]
-            })
 
     def execute_buy(self, code, name, price, amount, stop_loss, target, reason):
         """买入逻辑保持不变，self.save() 现在会存入云端"""
