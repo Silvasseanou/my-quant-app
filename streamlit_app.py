@@ -1118,9 +1118,8 @@ class PortfolioManager:
     def settle_orders(self):
         """
         结算逻辑真实还原：
-        1. 锁定下单时的成本价（est_price），不再随确认净值而修正。
-        2. 仅根据真实净值修正你实际获得的份额。
-        3. 使下单到确认期间的波动，真实地体现在该基金的“持仓盈亏”中。
+        1. 锁定下单时的成本价，不再随确认净值修正。
+        2. 仅根据真实净值修正实际份额，使入场摩擦体现在持仓盈亏中。
         """
         today = get_bj_time().date()
         new_pending = []
@@ -1139,44 +1138,37 @@ class PortfolioManager:
                 real_nav = 0.0
                 correction_msg = ""
                 try:
-                    # 真实世界中，基金公司按 T 日收盘净值给你算份额
                     df_nav = DataService.fetch_nav_history(order['code'])
                     trade_date_dt = pd.to_datetime(order['date']) 
                     if not df_nav.empty and trade_date_dt in df_nav.index:
                         real_nav = float(df_nav.loc[trade_date_dt]['nav'])
                 except: pass
 
-                # 【下单决策价】这是你点下按钮时的预估价格
                 est_price = order.get('cost', order.get('price', 0.0))
                 
                 if real_nav > 0:
                     buy_amount = order['amount']
-                    # 真实份额计算：你掏了1000元，基金公司按 real_nav 给你份额
+                    # 真实份额计算
                     order['shares'] = buy_amount / real_nav
                     
-                    # === 真实化核心：成本锁定 ===
-                    # 保持 order['cost'] = est_price (下单价) 不动！
-                    # 这样该基金一出现在持仓，浮盈 = (当前净值 - 下单价) * 份额
-                    # 如果下单到确认期间跌了，它一进场就是“亏损”状态。
+                    # === 真实化：成本锁定为下单决策价 ===
+                    # 保持 order['cost'] = est_price 不动
                     
                     if abs(real_nav - est_price) > 0.0001:
-                        # 计算这段“在途期间”的真实盈亏损耗
                         friction_pnl = (real_nav - est_price) * order['shares']
-                        correction_msg = f" | 估值偏差: {est_price:.4f}->{real_nav:.4f} (入场损耗: ¥{friction_pnl:+.2f})"
+                        correction_msg = f" | 估值偏差: {est_price:.4f}->{real_nav:.4f} (损耗: ¥{friction_pnl:+.2f})"
 
-                # 将带有“决策成本”和“真实份额”的订单转入持仓
                 self._add_to_holdings(order)
                 settled_count += 1
-                
                 self.data['history'].append({
                     "date": get_bj_time().strftime('%Y-%m-%d %H:%M:%S'),
                     "action": "CONFIRM",
                     "code": order['code'],
                     "name": order['name'],
-                    "price": real_nav, # 流水记录真实的成交价格
+                    "price": real_nav,
                     "amount": 0,
                     "reason": f"份额确认 (T+1){correction_msg}", 
-                    "pnl": 0 # 此处不计入平仓盈亏，它已转化为持仓里的浮动盈亏
+                    "pnl": 0 
                 })
             else:
                 new_pending.append(order)
@@ -1863,54 +1855,45 @@ def render_dashboard():
 
         st.divider()
         
-        # === 核心：修正后的资产与盈亏计算逻辑 ===
+        # === 核心：综合盈亏统计 (实盈 + 浮盈) ===
         
-        # 1. 计算各项资产净值
-        total_hold_val = 0
+        # 1. 计算当前所有持仓的浮动盈亏
+        total_holdings_pnl = 0
         for h in holdings:
             curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
-            total_hold_val += h['shares'] * curr_p
+            total_holdings_pnl += (curr_p - h['cost']) * h['shares']
 
-        # 实际已确认资产 (不含在途资金)
-        actual_assets = pm.data['capital'] + total_hold_val
-        # 在途资金
-        pending_val = sum([p['amount'] for p in pending])
-        # 总权益 (用于展示)
-        total_assets_display = actual_assets + pending_val
-
-        # 2. 计算本金流
-        initial_capital = 20000.0 
-        total_deposited = initial_capital + sum([h['amount'] for h in history if h['action'] == 'DEPOSIT'])
-        total_withdrawn = sum([h['amount'] for h in history if h['action'] == 'WITHDRAW'])
-        net_investment = total_deposited - total_withdrawn
-
-        # 3. 盈亏计算
-        # 历史已平仓盈亏累计
+        # 2. 获取历史已平仓的累计盈亏 (包含交银亏损)
         history_pnl = sum([h.get('pnl', 0) for h in history if h.get('pnl', 0) != 0])
-        # 总盈亏 = 当前权益总和 - 净投入本金
-        total_pnl_val = total_assets_display - net_investment
-        total_pnl_pct = (total_pnl_val / net_investment) if net_investment > 0 else 0
+
+        # 3. 综合总盈亏
+        total_combined_pnl = history_pnl + total_holdings_pnl
+        
+        # 计算投入成本基数
+        total_invested_cost = sum(h['shares'] * h['cost'] for h in holdings)
+        total_pnl_pct = (total_combined_pnl / (total_invested_cost + 1e-6))
 
         # --- UI 展示：实战战报 ---
-        st.markdown(f"### 🚩 账户实战战报")
+        st.markdown(f"### 🚩 综合实战战报 (实盈 + 浮盈)")
         p1, p2, p3 = st.columns(3)
-        pnl_color = "red" if total_pnl_val < 0 else "green"
+        pnl_color = "red" if total_combined_pnl < 0 else "green"
         
-        p1.metric("投入本金", f"¥{net_investment:,.2f}")
-        p2.metric("累计盈亏", f"¥{total_pnl_val:+.2f}", f"{total_pnl_pct:.2%}", delta_color="normal")
-        
-        status_text = "账户回撤中" if total_pnl_val < 0 else "账户盈利中"
-        st.markdown(f"**当前状态**: :{pnl_color}[{status_text}] | **已平仓累计贡献**: ¥{history_pnl:+.2f}")
+        p1.metric("已落袋损益", f"¥{history_pnl:+.2f}", help="交银等已平仓基金的最终盈亏")
+        p2.metric("综合累计盈亏", f"¥{total_combined_pnl:+.2f}", f"{total_pnl_pct:.2%}", delta_color="normal")
+        p3.markdown(f"**战果评估**: :{pnl_color}[{ '策略修复中' if total_combined_pnl < 0 else '盈利奔跑中' }]")
         
         st.divider()
 
-        # --- 资产卡片 ---
+        # 资产分布卡片（用于核对银行卡余额）
+        total_hold_val = sum(h['shares'] * DataService.get_smart_price(h['code'], h['cost'])[0] for h in holdings)
+        pending_val = sum([p['amount'] for p in pending])
+        total_assets_display = pm.data['capital'] + total_hold_val + pending_val
+        
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("💰 总权益", f"¥{total_assets_display:,.2f}", help="可用现金 + 持仓市值 + 在途资金")
+        k1.metric("💰 账户总值", f"¥{total_assets_display:,.2f}", help="银行卡里的真实资产总额")
         k2.metric("💵 可用现金", f"¥{pm.data['capital']:,.2f}")
         k3.metric("📈 持仓市值", f"¥{total_hold_val:,.2f}")
-        k4.metric("⏳ 在途/冻结", f"¥{pending_val:,.2f}")
-        
+        k4.metric("⏳ 在途买入", f"¥{pending_val:,.2f}")
         st.divider()
 
         c_left, c_right = st.columns([1, 2])
