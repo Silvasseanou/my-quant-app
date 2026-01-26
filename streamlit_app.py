@@ -1873,7 +1873,28 @@ def render_dashboard():
 
         pending_val = sum([p['amount'] for p in pending])
         total_assets = pm.data['capital'] + total_hold_val + pending_val
-        
+        # === 就在这里插入盈亏计算代码 ===
+        initial_capital = 20000.0  # 你的初始本金
+        # 加上你所有的历史入金记录
+        total_deposited = initial_capital + sum([h['amount'] for h in history if h['action'] == 'DEPOSIT'])
+        # 减去你所有的历史出金记录
+        total_withdrawn = sum([h['amount'] for h in history if h['action'] == 'WITHDRAW'])
+        # 净投入本金
+        net_investment = total_deposited - total_withdrawn
+
+        # 账户总盈亏
+        total_pnl_val = total_assets - net_investment
+        total_pnl_pct = (total_pnl_val / net_investment) if net_investment > 0 else 0
+
+        # --- UI 展示：实战战报 ---
+        st.markdown(f"### 🚩 账户实战战报")
+        p1, p2, p3 = st.columns(3)
+        pnl_color = "red" if total_pnl_val < 0 else "green"
+        p1.metric("投入本金", f"¥{net_investment:,.2f}")
+        p2.metric("累计盈亏", f"{total_pnl_val:+.2f}", f"{total_pnl_pct:.2%}", delta_color="normal")
+        p3.markdown(f"**战果评估**: :{pnl_color}[{ '账户回撤中' if total_pnl_val < 0 else '账户盈利中' }]")
+        st.divider()
+        # ============================
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("💰 总权益", f"¥{total_assets:,.2f}")
         k2.metric("💵 可用现金", f"¥{pm.data['capital']:,.2f}")
