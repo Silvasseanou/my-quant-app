@@ -1652,38 +1652,71 @@ def render_dashboard():
     with tab1:
         st.subheader("🏥 持仓深度波浪诊断")
         if st.button("刷新诊断"): st.rerun()
+        
         for i, item in enumerate(USER_PORTFOLIO_CONFIG):
-            # 使用智能价格获取
+            # 1. 获取智能价格和历史 df
             curr_price, df, used_est = DataService.get_smart_price(item['code'], item['cost'])
             
-            # 如果使用了实时估值，需要模拟一行数据给指标引擎
-            if used_est and not df.empty:
+            # 数据防御性检查：如果没有 nav 列，跳过
+            if df.empty or 'nav' not in df.columns:
+                st.error(f"❌ 无法获取 {item['name']} ({item['code']}) 数据，已跳过")
+                continue
+
+            # 2. 【核心】自动定位逻辑买入日与持有期最高点
+            lookback_df = df.tail(250).copy()
+            # 寻找历史上净值最接近成本价的那一天作为疑似入场日
+            lookback_df['diff'] = (lookback_df['nav'] - item['cost']).abs()
+            inferred_buy_date = lookback_df['diff'].idxmin()
+            
+            # 定位持有期间最高点
+            hold_period_navs = df.loc[inferred_buy_date:]['nav']
+            h_highest = hold_period_navs.max()
+            h_highest = max(h_highest, curr_price) # 包含今日估值新高
+            
+            # 3. 计算实时指标
+            drawdown_from_peak = (h_highest - curr_price) / h_highest
+            pnl_pct = (curr_price - item['cost']) / item['cost']
+            
+            # 计算僵尸持仓 (持有>40天且波动小)
+            hold_days = (get_bj_time().date() - inferred_buy_date.date()).days
+            trigger_dead = hold_days > 40 and abs(pnl_pct) < 0.03
+            
+            # 4. 运行波浪算法
+            if used_est:
                 new_row = pd.DataFrame({'nav': [curr_price]}, index=[df.index[-1] + datetime.timedelta(days=1)])
                 df_calc = pd.concat([df, new_row])
-            else: df_calc = df
-                
+            else:
+                df_calc = df
             df_calc = IndicatorEngine.calculate_indicators(df_calc)
             pivots = WaveEngine.zig_zag(df_calc['nav'][-150:]) 
             res = WaveEngine.analyze_structure(df_calc, pivots)
             
-            shares = item['hold']
-            market_value = shares * curr_price
-            pnl = (curr_price - item['cost']) * shares
-            pnl_pct = (curr_price - item['cost']) / item['cost']
-            
+            # 5. 【策略判定】移动止盈
+            is_profit_target_hit = (h_highest - item['cost']) / item['cost'] >= 0.05
+            trigger_trailing = is_profit_target_hit and drawdown_from_peak >= 0.08
+
+            # --- UI 渲染部分 ---
             est_tag = " (实时)" if used_est else ""
             advice_color = "red" if res['status'] == 'Buy' else ("green" if res['status'] == 'Sell' else "grey")
-            with st.expander(f"{item['name']} | 盈亏: {pnl:+.2f} ({pnl_pct:.2%}) | 建议: {res['status']}", expanded=True):
+            
+            with st.expander(f"{item['name']} | 盈亏: {pnl_pct:+.2%} | 建议: {res['status']}", expanded=True):
                 c1, c2, c3 = st.columns([1, 1, 2])
                 with c1:
-                    st.metric(f"最新估值{est_tag}", f"{curr_price:.4f}")
+                    st.metric(f"最新估值{est_tag}", f"{curr_price:.4f}", f"{pnl_pct:.2%}")
                     st.metric("持仓成本", f"{item['cost']:.4f}")
                 with c2:
-                    st.metric("持仓市值", f"¥{market_value:,.2f}")
-                    st.markdown(f"**评分**: {res['score']}")
+                    st.metric("期间最高", f"{h_highest:.4f}")
+                    st.metric("高点回撤", f"{drawdown_from_peak:.2%}", delta_color="inverse")
                 with c3:
-                    st.markdown(f"### 建议: :{advice_color}[{res['status']}]")
-                    st.write(f"**分析**: {res['desc']}")
+                    if trigger_trailing:
+                        st.error(f"🚨 **移动止盈触发**：从最高点回撤达 {drawdown_from_peak:.1%}，建议离场。")
+                    if trigger_dead:
+                        st.warning(f"💤 **僵尸持仓预警**：已持有约 {hold_days} 天且无波动，建议更换。")
+                    
+                    st.markdown(f"### 波浪建议: :{advice_color}[{res['status']}]")
+                    st.write(f"**分析**: {res['desc']} (疑似入场日: {inferred_buy_date.date()})")
+                
+                # 绘图
                 fig = plot_wave_chart(df_calc.iloc[-120:], pivots, f"{item['name']} 结构图", cost=item['cost'])
                 st.plotly_chart(fig, use_container_width=True, key=f"diag_chart_{item['code']}_{i}")
 
