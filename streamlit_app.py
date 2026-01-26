@@ -1788,14 +1788,13 @@ def render_dashboard():
                 st.info("💡 检查是否存在“假分散”。如果您买了5只基金，但颜色都是深红色（相关性>0.9），说明风险极度集中！")
                 if st.button("生成热力图"):
                     if len(holdings) < 2:
-                        st.warning("持仓少于2只，无法计算相关性。")
+                        st.warning("持仓少于2只，无法计算相关性.")
                     else:
                         with st.spinner("正在下载历史数据计算相关性..."):
                             df_corr_list = []
                             for h in holdings:
                                 df_tmp = DataService.fetch_nav_history(h['code'])
                                 if not df_tmp.empty:
-                                    # 截取最近1年数据
                                     df_tmp = df_tmp.iloc[-250:]
                                     s_pct = df_tmp['nav'].pct_change()
                                     s_pct.name = h['name']
@@ -1809,7 +1808,7 @@ def render_dashboard():
                                     z=corr_matrix.values,
                                     x=corr_matrix.columns,
                                     y=corr_matrix.index,
-                                    colorscale='RdBu_r', # 红=正相关，蓝=负相关
+                                    colorscale='RdBu_r', 
                                     zmin=-1, zmax=1
                                 ))
                                 fig_corr.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0))
@@ -1827,7 +1826,6 @@ def render_dashboard():
                         progress_doc = st.progress(0, text="计算市场基准...")
                         pool = DataService.get_market_wide_pool() if "全市场" in scan_mode else STATIC_OTF_POOL
                         market_moms = []
-                        # 抽样计算
                         sample_pool = pool[:50]
                         for idx, fund in enumerate(sample_pool):
                             df = DataService.fetch_nav_history(fund['code'])
@@ -1865,17 +1863,19 @@ def render_dashboard():
 
         st.divider()
         
-# 1. 计算各项资产净值
+        # === 核心：修正后的资产与盈亏计算逻辑 ===
+        
+        # 1. 计算各项资产净值
         total_hold_val = 0
         for h in holdings:
             curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
             total_hold_val += h['shares'] * curr_p
 
-        # 实际已确认资产 (不含在途)
+        # 实际已确认资产 (不含在途资金)
         actual_assets = pm.data['capital'] + total_hold_val
-        # 在途资金 (等待份额确认)
+        # 在途资金
         pending_val = sum([p['amount'] for p in pending])
-        # 总权益 (展示用)
+        # 总权益 (用于展示)
         total_assets_display = actual_assets + pending_val
 
         # 2. 计算本金流
@@ -1884,12 +1884,11 @@ def render_dashboard():
         total_withdrawn = sum([h['amount'] for h in history if h['action'] == 'WITHDRAW'])
         net_investment = total_deposited - total_withdrawn
 
-        # 3. 盈亏逻辑修正
+        # 3. 盈亏计算
         # 历史已平仓盈亏累计
         history_pnl = sum([h.get('pnl', 0) for h in history if h.get('pnl', 0) != 0])
-        # 当前已确认盈亏 = 实际可用资产 - (净投入本金 - 在途资金占用)
-        # 逻辑：在途资金虽然被扣除，但尚未变成持仓，计算盈亏时应将其从本金基数中暂时剔除，或者加入资产端
-        total_pnl_val = (actual_assets + pending_val) - net_investment
+        # 总盈亏 = 当前权益总和 - 净投入本金
+        total_pnl_val = total_assets_display - net_investment
         total_pnl_pct = (total_pnl_val / net_investment) if net_investment > 0 else 0
 
         # --- UI 展示：实战战报 ---
@@ -1898,21 +1897,19 @@ def render_dashboard():
         pnl_color = "red" if total_pnl_val < 0 else "green"
         
         p1.metric("投入本金", f"¥{net_investment:,.2f}")
-        # 累计盈亏反映的是：(当前现金 + 当前市值 + 在途) - (所有入金 - 所有出金)
         p2.metric("累计盈亏", f"¥{total_pnl_val:+.2f}", f"{total_pnl_pct:.2%}", delta_color="normal")
         
-        # 增加一个战果评估的逻辑描述
         status_text = "账户回撤中" if total_pnl_val < 0 else "账户盈利中"
         st.markdown(f"**当前状态**: :{pnl_color}[{status_text}] | **已平仓累计贡献**: ¥{history_pnl:+.2f}")
         
         st.divider()
 
-        # --- 资产卡片：清晰展示资金分布 ---
+        # --- 资产卡片 ---
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("💰 总权益", f"¥{total_assets_display:,.2f}", help="可用现金 + 持仓市值 + 在途资金")
         k2.metric("💵 可用现金", f"¥{pm.data['capital']:,.2f}")
         k3.metric("📈 持仓市值", f"¥{total_hold_val:,.2f}")
-        k4.metric("⏳ 在途/冻结", f"¥{pending_val:,.2f}", help="已提交申请但尚未确认份额的资金")
+        k4.metric("⏳ 在途/冻结", f"¥{pending_val:,.2f}")
         
         st.divider()
 
@@ -1975,7 +1972,6 @@ def render_dashboard():
             if not holdings: st.caption("暂无持仓")
             else:
                 for h in holdings:
-                    # 使用智能价格获取
                     curr_price, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
                     
                     can_add = False; add_reason = ""
@@ -2015,8 +2011,8 @@ def render_dashboard():
                         with c4:
                             col_add, col_sell, col_del = st.columns([1, 1, 1])
                             
-                            # 1. 加仓按钮
-                            add_amt_sugg = total_assets * 0.10
+                            # 1. 加仓按钮 (此处已修正变量名错误)
+                            add_amt_sugg = total_assets_display * 0.10
                             add_amt = min(pm.data['capital'], add_amt_sugg)
                             if col_add.button("➕", key=f"add_{h['code']}", help=f"建议加仓 ¥{add_amt:.0f}"):
                                 if pm.data['capital'] < 100: st.error("现金不足！")
@@ -2024,21 +2020,19 @@ def render_dashboard():
                                     suc, msg = pm.execute_buy(h['code'], h['name'], curr_price, add_amt, res.get('stop_loss', 0), res.get('target', 0), f"浮盈加仓 (+{pnl_pct:.1%})")
                                     if suc: st.toast(f"✅ 已提交！"); time.sleep(1); st.rerun()
                             
-                            # 2. 正常卖出按钮 (计入流水，回笼资金)
+                            # 2. 正常卖出按钮
                             if col_sell.button("💰", key=f"sell_{h['code']}", help="卖出并结算资金到现金账户"):
                                 suc, msg = pm.execute_sell(h['code'], curr_price, "手动卖出", force=True)
                                 if suc: st.success(msg); time.sleep(1); st.rerun()
                             
-                            # 3. 彻底删除按钮 (新增：用于清理录入错误的废数据，不计入流水)
+                            # 3. 彻底删除按钮
                             if col_del.button("🗑️", key=f"raw_del_{h['code']}", help="彻底删除此记录 (不计入收益，不退回资金)"):
-                                # 执行物理删除
                                 pm.data['holdings'].pop(holdings.index(h))
-                                pm.save() # 同步到云端
+                                pm.save() 
                                 st.toast(f"🗑️ {h['name']} 已从云端彻底抹除")
                                 time.sleep(1)
                                 st.rerun()
                         
-                        # === 波浪结构分析图 ===
                         with st.expander(f"📉 {h['name']} 走势与结构分析"):
                             if not df.empty:
                                 fig = plot_wave_chart(df_calc.iloc[-120:], pivots, f"{h['name']} 结构图", cost=h['cost'])
@@ -2051,45 +2045,33 @@ def render_dashboard():
         
         st.subheader("📜 交易流水")
         if history:
-            # 1. 倒序排列，让最新的在上面
             hist_list = list(reversed(history))
-            
-            # 2. 增加一个“清理所有”按钮（可选）
             if st.button("🧹 清空所有流水记录", type="secondary"):
                 pm.data['history'] = []
                 pm.save()
                 st.rerun()
 
             st.markdown("---")
-            
-            # 3. 循环显示每一条流水
             for idx, item in enumerate(hist_list):
-                # 真实的索引（因为 hist_list 是倒序的）
                 real_idx = len(history) - 1 - idx
-                
                 hc1, hc2, hc3 = st.columns([2, 5, 1])
-                
-                # 第一列：动作和时间
                 action_color = "red" if "SELL" in item['action'] or "WITHDRAW" in item['action'] else "green"
                 hc1.markdown(f"**:{action_color}[{item['action']}]**")
-                hc1.caption(f"{item['date'].split(' ')[0]}") # 只显示日期
+                hc1.caption(f"{item['date'].split(' ')[0]}") 
                 
-                # 第二列：详细内容
                 pnl_str = f" | 盈亏: {item['pnl']:+.2f}" if item.get('pnl', 0) != 0 else ""
                 hc2.write(f"**{item['name']}** ({item['code']})")
                 hc2.caption(f"价格: {item['price']:.4f} | 金额: ¥{item['amount']:,.2f}{pnl_str}")
                 hc2.info(f"备注: {item['reason']}")
                 
-                # 第三列：删除按钮
-                if hc3.button("🗑️", key=f"hist_del_{real_idx}", help="删除此条流水"):
+                if hc3.button("🗑️", key=f"hist_del_{real_idx}"):
                     pm.data['history'].pop(real_idx)
-                    pm.save() # 同步到云端
+                    pm.save() 
                     st.toast("流水记录已删除")
                     time.sleep(0.5)
                     st.rerun()
                 st.divider()
             
-            # 导出功能保持不变
             df_hist = pd.DataFrame(history).iloc[::-1]
             csv = df_hist.to_csv(index=False).encode('utf-8-sig')
             st.download_button("📥 导出流水 (CSV)", data=csv, file_name=f"trade_history_{get_bj_time().date()}.csv", mime="text/csv")
