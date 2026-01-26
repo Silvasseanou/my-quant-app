@@ -1908,19 +1908,30 @@ def render_dashboard():
                         c2.metric("持仓市值", f"¥{mkt_val:,.0f}")
                         c3.metric("浮动盈亏", f"{pnl_val:+.0f}", f"{pnl_pct:.2%}")
                         with c4:
-                            col_add, col_sell = st.columns(2)
+                            col_add, col_sell, col_del = st.columns([1, 1, 1])
+                            
+                            # 1. 加仓按钮
                             add_amt_sugg = total_assets * 0.10
                             add_amt = min(pm.data['capital'], add_amt_sugg)
-                            if col_add.button("➕ 加仓", key=f"add_{h['code']}", help=f"建议加仓 ¥{add_amt:.0f} (半个单位)"):
+                            if col_add.button("➕", key=f"add_{h['code']}", help=f"建议加仓 ¥{add_amt:.0f}"):
                                 if pm.data['capital'] < 100: st.error("现金不足！")
                                 else:
                                     suc, msg = pm.execute_buy(h['code'], h['name'], curr_price, add_amt, res.get('stop_loss', 0), res.get('target', 0), f"浮盈加仓 (+{pnl_pct:.1%})")
-                                    if suc: st.toast(f"✅ 加仓申请已提交！¥{add_amt:.0f}"); time.sleep(1); st.rerun()
-                                    else: st.error(msg)
-                            if col_sell.button("卖出", key=f"sell_{h['code']}"):
+                                    if suc: st.toast(f"✅ 已提交！"); time.sleep(1); st.rerun()
+                            
+                            # 2. 正常卖出按钮 (计入流水，回笼资金)
+                            if col_sell.button("💰", key=f"sell_{h['code']}", help="卖出并结算资金到现金账户"):
                                 suc, msg = pm.execute_sell(h['code'], curr_price, "手动卖出", force=True)
                                 if suc: st.success(msg); time.sleep(1); st.rerun()
-                                else: st.warning(msg)
+                            
+                            # 3. 彻底删除按钮 (新增：用于清理录入错误的废数据，不计入流水)
+                            if col_del.button("🗑️", key=f"raw_del_{h['code']}", help="彻底删除此记录 (不计入收益，不退回资金)"):
+                                # 执行物理删除
+                                pm.data['holdings'].pop(holdings.index(h))
+                                pm.save() # 同步到云端
+                                st.toast(f"🗑️ {h['name']} 已从云端彻底抹除")
+                                time.sleep(1)
+                                st.rerun()
                         
                         # === 波浪结构分析图 ===
                         with st.expander(f"📉 {h['name']} 走势与结构分析"):
