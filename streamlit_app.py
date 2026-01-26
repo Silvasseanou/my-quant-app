@@ -1221,7 +1221,7 @@ class PortfolioManager:
         return True, f"买入申请已提交，等待份额确认 ({settlement_date})"
 
     def execute_sell(self, code, price, reason, force=False):
-        """卖出逻辑保持不变，包含惩罚费计算，self.save() 现在会存入云端"""
+        """卖出逻辑：包含惩罚费计算，并将记录同步到云端、流水及飞书"""
         idx = -1
         for i, h in enumerate(self.data['holdings']):
             if h['code'] == code: idx = i; break
@@ -1239,6 +1239,7 @@ class PortfolioManager:
         temp_lots = [lot.copy() for lot in lots]
         used_lots_indices, penalty_shares = [], 0 
         
+        # 1. 核心计算逻辑：处理批次、惩罚费、收益率
         for i, lot in enumerate(temp_lots):
             if remaining_sell <= 0: break
             can_sell = min(remaining_sell, lot['shares'])
@@ -1255,28 +1256,57 @@ class PortfolioManager:
             if can_sell == lot['shares']: used_lots_indices.append(i) 
             else: temp_lots[i]['shares'] -= can_sell
         
+        # 2. 软确认：如果满 7 天惩罚费警告（除非 force=True）
         if penalty_shares > 0 and not force:
              return False, f"检测到 {penalty_shares:.2f} 份持仓不足7天，将收取惩罚费 ¥{total_fee:.2f}。请再次点击卖出确认。"
         
+        # 3. 执行资金变动
         self.data['capital'] += total_revenue
         new_lots = [lot for i, lot in enumerate(temp_lots) if i not in used_lots_indices]
         
-        if not new_lots: self.data['holdings'].pop(idx)
+        # 4. 计算盈亏金额与百分比（用于流水和战报）
+        pnl_val = total_revenue - total_cost_basis
+        pnl_pct = pnl_val / total_cost_basis if total_cost_basis > 0 else 0
+        
+        # 5. 更新持仓数据
+        if not new_lots: 
+            self.data['holdings'].pop(idx)
         else:
             h['lots'], h['shares'] = new_lots, sum(l['shares'] for l in new_lots)
             h['cost'] = sum(l['shares'] * l['cost_per_share'] for l in new_lots) / h['shares']
             self.data['holdings'][idx] = h
             
+        # 6. 【重要】记录同步到历史流水
         fee_note = f" (含惩罚费 ¥{total_fee:.2f})" if total_fee > 0 else ""
         self.data['history'].append({
             "date": get_bj_time().strftime('%Y-%m-%d %H:%M:%S'), 
             "action": "SELL", 
-            "code": code, "name": h['name'], "price": price, 
-            "amount": total_revenue, "reason": f"{reason}{fee_note}", 
-            "pnl": total_revenue - total_cost_basis
+            "code": code, 
+            "name": h['name'], 
+            "price": price, 
+            "amount": total_revenue, 
+            "reason": f"{reason}{fee_note}", 
+            "pnl": pnl_val
         })
+        
+        # 7. 同步到云端 Supabase
         self.save()
-        return True, f"卖出成功，资金已到账{fee_note}"
+
+        # 8. 实时反馈：Toast 提示与飞书推送
+        st.toast(f"✅ 已记录卖出流水: {h['name']}", icon="📈")
+        
+        pnl_icon = "🔴" if pnl_val < 0 else "🟢"
+        fs_title = f"{pnl_icon} 平仓战报: {h['name']}"
+        fs_content = (
+            f"**动作**: 卖出平仓\n"
+            f"**净值**: {price:.4f}\n"
+            f"**金额**: ¥{total_revenue:,.2f}\n"
+            f"**盈亏**: ¥{pnl_val:+.2f} ({pnl_pct:+.2%})\n"
+            f"**备注**: {reason}{fee_note}"
+        )
+        NotificationService.send_feishu(fs_title, fs_content)
+        
+        return True, f"卖出成功，收益 ¥{pnl_val:+.2f} {fee_note}"
 
     def execute_deposit(self, amount, note="账户入金"):
         """入金逻辑保持不变"""
