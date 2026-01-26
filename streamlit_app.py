@@ -1865,41 +1865,55 @@ def render_dashboard():
 
         st.divider()
         
-        # === 顶部资产数据卡片: 价格修正 ===
+# 1. 计算各项资产净值
         total_hold_val = 0
         for h in holdings:
             curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
             total_hold_val += h['shares'] * curr_p
 
+        # 实际已确认资产 (不含在途)
+        actual_assets = pm.data['capital'] + total_hold_val
+        # 在途资金 (等待份额确认)
         pending_val = sum([p['amount'] for p in pending])
-        total_assets = pm.data['capital'] + total_hold_val + pending_val
-        # === 就在这里插入盈亏计算代码 ===
-        initial_capital = 20000.0  # 你的初始本金
-        # 加上你所有的历史入金记录
+        # 总权益 (展示用)
+        total_assets_display = actual_assets + pending_val
+
+        # 2. 计算本金流
+        initial_capital = 20000.0 
         total_deposited = initial_capital + sum([h['amount'] for h in history if h['action'] == 'DEPOSIT'])
-        # 减去你所有的历史出金记录
         total_withdrawn = sum([h['amount'] for h in history if h['action'] == 'WITHDRAW'])
-        # 净投入本金
         net_investment = total_deposited - total_withdrawn
 
-        # 账户总盈亏
-        total_pnl_val = total_assets - net_investment
+        # 3. 盈亏逻辑修正
+        # 历史已平仓盈亏累计
+        history_pnl = sum([h.get('pnl', 0) for h in history if h.get('pnl', 0) != 0])
+        # 当前已确认盈亏 = 实际可用资产 - (净投入本金 - 在途资金占用)
+        # 逻辑：在途资金虽然被扣除，但尚未变成持仓，计算盈亏时应将其从本金基数中暂时剔除，或者加入资产端
+        total_pnl_val = (actual_assets + pending_val) - net_investment
         total_pnl_pct = (total_pnl_val / net_investment) if net_investment > 0 else 0
 
         # --- UI 展示：实战战报 ---
         st.markdown(f"### 🚩 账户实战战报")
         p1, p2, p3 = st.columns(3)
         pnl_color = "red" if total_pnl_val < 0 else "green"
+        
         p1.metric("投入本金", f"¥{net_investment:,.2f}")
-        p2.metric("累计盈亏", f"{total_pnl_val:+.2f}", f"{total_pnl_pct:.2%}", delta_color="normal")
-        p3.markdown(f"**战果评估**: :{pnl_color}[{ '账户回撤中' if total_pnl_val < 0 else '账户盈利中' }]")
+        # 累计盈亏反映的是：(当前现金 + 当前市值 + 在途) - (所有入金 - 所有出金)
+        p2.metric("累计盈亏", f"¥{total_pnl_val:+.2f}", f"{total_pnl_pct:.2%}", delta_color="normal")
+        
+        # 增加一个战果评估的逻辑描述
+        status_text = "账户回撤中" if total_pnl_val < 0 else "账户盈利中"
+        st.markdown(f"**当前状态**: :{pnl_color}[{status_text}] | **已平仓累计贡献**: ¥{history_pnl:+.2f}")
+        
         st.divider()
-        # ============================
+
+        # --- 资产卡片：清晰展示资金分布 ---
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("💰 总权益", f"¥{total_assets:,.2f}")
+        k1.metric("💰 总权益", f"¥{total_assets_display:,.2f}", help="可用现金 + 持仓市值 + 在途资金")
         k2.metric("💵 可用现金", f"¥{pm.data['capital']:,.2f}")
         k3.metric("📈 持仓市值", f"¥{total_hold_val:,.2f}")
-        k4.metric("⏳ 在途/冻结", f"¥{pending_val:,.2f}")
+        k4.metric("⏳ 在途/冻结", f"¥{pending_val:,.2f}", help="已提交申请但尚未确认份额的资金")
+        
         st.divider()
 
         c_left, c_right = st.columns([1, 2])
