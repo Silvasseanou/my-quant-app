@@ -492,15 +492,10 @@ class WaveEngine:
 
     @staticmethod
     def analyze_structure(df_slice: pd.DataFrame, pivots: List[Dict]) -> Dict:
-        """
-        全量波浪结构分析引擎 (v37.5 增强确认版)
-        增加了：EMA21 破位确认逻辑、多天不收回判定、双重风险过滤
-        """
-        if len(df_slice) < 100: 
-            return {'status': 'Wait', 'score': 0, 'pattern': 'None', 'stop_loss': 0, 'target': 0, 'desc': '数据不足'}
+        if len(df_slice) < 100: return {'status': 'Wait', 'score': 0, 'pattern': 'None', 'stop_loss': 0, 'target': 0, 'desc': '数据不足'}
         
-        # 1. 基础数据提取
         last_nav = df_slice['nav'].iloc[-1]
+        
         ao = df_slice['ao']
         ao_curr = ao.iloc[-1]
         ao_prev = ao.iloc[-2]
@@ -517,44 +512,11 @@ class WaveEngine:
         
         result = {'status': 'Wait', 'score': 0, 'pattern': 'None', 'stop_loss': 0, 'target': 0, 'desc': '', 'atr': atr}
         
-        # === 核心：风险先行逻辑 (策略 C: 逃顶与确认) ===
-        if len(df_slice) > 60:
-            price_window = df_slice['nav'].iloc[-60:]
-            ao_window = df_slice['ao'].iloc[-60:]
-            
-            # A. 判断是否出现“动能背离”预警
-            is_divergence_alert = False
-            if last_nav >= price_window.max() * 0.99: # 价格处于近期最高点附近
-                if ao_curr < ao_window.max() * 0.7:  # 但动能明显不足前期波峰
-                    is_divergence_alert = True
-            
-            # B. 判断是否“无法迅速收回 EMA21”
-            # 逻辑：过去3个交易日中，收盘价低于EMA21的天数 >= 2天
-            recent_navs = df_slice['nav'].iloc[-3:]
-            recent_ema21 = df_slice['ema_21'].iloc[-3:]
-            failed_to_recover = (recent_navs < recent_ema21).sum() >= 2
-            
-            # C. 判定最终 Sell 信号
-            sell_reason = ""
-            if is_divergence_alert and (failed_to_recover or last_nav < low_20):
-                sell_reason = "顶背离确认 + 价格有效跌破EMA21或20日新低"
-            elif last_nav < ema89:
-                sell_reason = "趋势彻底破位：跌破长期生命线(EMA89)"
-            
-            if sell_reason:
-                result.update({
-                    'status': 'Sell', 
-                    'score': -95, 
-                    'pattern': 'Divergence Breakdown', 
-                    'desc': sell_reason
-                })
-                return result # 风险触发，直接返回，不执行买入逻辑
-
-        # === 基础过滤：熊市不入场 ===
+        # 基础过滤
         if last_nav < ema89 and rsi > 30:
              return {'status': 'Wait', 'score': 0, 'pattern': 'Bearish', 'stop_loss': 0, 'target': 0, 'desc': '价格在生命线(EMA89)之下，观望', 'atr': atr}
 
-        # === 策略 A: 结构性突破 (顺势增仓/建仓) ===
+        # === 策略 A: 结构性突破 ===
         if last_nav > high_20:
             if ao_curr > 0 and ao_curr > ao_prev: 
                 result.update({
@@ -567,19 +529,32 @@ class WaveEngine:
                 })
                 return result
 
-        # === 策略 B: 趋势回调 (左侧入场点) ===
+        # === 策略 B: 趋势回调 ===
         if ema21 > ema55: 
             if last_nav < ema21 and last_nav > ema55:
-                if ao_curr > 0: # 即使回调，动能柱也需在零轴上方（强趋势）
+                if ao_curr > 0:
                     result.update({
                         'status': 'Buy', 
                         'score': 80, 
                         'pattern': 'Trend Pullback', 
-                        'desc': '多头趋势回踩EMA21/55支撑',
+                        'desc': '多头趋势回踩支撑',
                         'stop_loss': ema89, 
                         'target': last_nav * 1.2
                     })
                     return result
+
+        # === 策略 C: 逃顶 ===
+        if len(df_slice) > 60:
+            price_window = df_slice['nav'].iloc[-60:]
+            if last_nav >= price_window.max() * 0.99:
+                ao_window = df_slice['ao'].iloc[-60:]
+                if ao_curr < ao_window.max() * 0.7: 
+                     result.update({
+                        'status': 'Sell', 
+                        'score': -95, 
+                        'pattern': 'Wave 5 Divergence', 
+                        'desc': '价格新高但动能衰竭 (顶背离)'
+                    })
 
         return result
 
@@ -738,7 +713,7 @@ class PortfolioBacktester:
         
         active_start_date = pd.to_datetime(override_start_date) if override_start_date else self.start_date
         
-        # === 1. 获取并对齐基准数据 (沪深300) ===
+        # === 获取并对齐基准数据 (沪深300) ===
         benchmark_df = DataService.fetch_nav_history("000300")
         
         all_dates = set()
@@ -746,20 +721,22 @@ class PortfolioBacktester:
             mask = (df.index >= active_start_date) & (df.index <= self.end_date)
             all_dates.update(df.loc[mask].index)
         
+        # 确保基准数据也在日期范围内
         if not benchmark_df.empty:
             b_mask = (benchmark_df.index >= active_start_date) & (benchmark_df.index <= self.end_date)
             all_dates.update(benchmark_df.loc[b_mask].index)
             
         sorted_dates = sorted(list(all_dates))
         
-        # 初始化账户状态
         capital = initial_capital
         total_principal = initial_capital 
+        
+        # Benchmark Variables
         bench_shares = 0
         bench_cash = initial_capital
-        
         if not benchmark_df.empty:
             start_price = 0
+            # 找到第一个有效价格
             for d in sorted_dates:
                 if d in benchmark_df.index:
                     start_price = benchmark_df.loc[d]['nav']
@@ -770,23 +747,23 @@ class PortfolioBacktester:
         
         holdings = {}
         receivables = [] 
+        
         equity_curve = [] 
         drawdown_curve = [] 
         trades = []
         peak_equity = initial_capital
         
         FIXED_BET_SIZE = initial_capital * 0.2 
-        SETTLEMENT_DAYS = 1 # 模拟 T+1 到账
+        SETTLEMENT_DAYS = 1 
         last_month = -1 
         last_rebalance_idx = -999 
         
-        MOMENTUM_WINDOW = 120 
-        TOP_N_COUNT = 50   
+        # === 动能筛选参数 (与大屏保持一致) ===
+        MOMENTUM_WINDOW = 120 # 看过去 120 个交易日
+        TOP_N_COUNT = 50   # 严格对齐大屏：只看排名前 50 的强势品种
 
-        # === 2. 核心日期循环 ===
         for i, curr_date in enumerate(sorted_dates):
-            daily_buy_count = 0
-            # --- 每月定投逻辑 ---
+            # === 每月定投 (Benchmark 也定投) ===
             if monthly_deposit > 0:
                 if curr_date.month != last_month:
                     if last_month != -1: 
@@ -794,44 +771,81 @@ class PortfolioBacktester:
                         total_principal += monthly_deposit
                         trades.append({'date': curr_date, 'action': 'DEPOSIT', 'code': '-', 'name': '工资定投', 'price': 1, 'shares': monthly_deposit, 'reason': '每月自动充值', 'pnl': 0})
                         
+                        # Benchmark 定投
                         if not benchmark_df.empty:
                             b_price = benchmark_df.loc[curr_date]['nav'] if curr_date in benchmark_df.index else 0
-                            if b_price == 0:
+                            if b_price == 0: # 回溯找最近价格
                                 try:
                                     b_idx = benchmark_df.index.get_indexer([curr_date], method='pad')[0]
                                     if b_idx != -1: b_price = benchmark_df.iloc[b_idx]['nav']
                                 except: pass
-                            if b_price > 0: bench_shares += monthly_deposit / b_price
-                            else: bench_cash += monthly_deposit
+                            
+                            if b_price > 0:
+                                bench_shares += monthly_deposit / b_price
+                            else:
+                                bench_cash += monthly_deposit
                                 
                     last_month = curr_date.month
 
-            # --- 资金结算 (回笼 SELL 后的资金) ---
+            # 1. 资金结算
             unlocked_cash = 0.0
             new_receivables = []
             for r in receivables:
-                if curr_date >= r['unlock_date']: unlocked_cash += r['amount']
-                else: new_receivables.append(r)
+                if curr_date >= r['unlock_date']:
+                    unlocked_cash += r['amount']
+                else:
+                    new_receivables.append(r)
             receivables = new_receivables
             capital += unlocked_cash 
             
             pending_val = sum([r['amount'] for r in receivables])
             
-            # --- 强制换股 (汰弱留强) ---
+            # 计算持仓市值
+            current_hold_val = 0
+            for h_code, h in holdings.items():
+                df = self.data_map.get(h_code)
+                if df is not None and curr_date in df.index:
+                    current_hold_val += h['shares'] * df.loc[curr_date]['nav']
+                elif df is not None:
+                      idx = df.index.get_indexer([curr_date], method='pad')[0]
+                      if idx != -1: current_hold_val += h['shares'] * df.iloc[idx]['nav']
+            
+            current_equity = capital + current_hold_val + pending_val
+            daily_buy_count = 0 
+            
+            # 计算 Benchmark 市值
+            bench_val = bench_cash
+            if not benchmark_df.empty:
+                b_now = benchmark_df.loc[curr_date]['nav'] if curr_date in benchmark_df.index else 0
+                if b_now == 0:
+                      try:
+                        b_idx = benchmark_df.index.get_indexer([curr_date], method='pad')[0]
+                        if b_idx != -1: b_now = benchmark_df.iloc[b_idx]['nav']
+                      except: pass
+                if b_now > 0:
+                    bench_val += bench_shares * b_now
+            
+            # === 2. 强制换股 (使用自定义 rebalance_gap) ===
             rebalance_sells = set()
+            
             if enable_rebalance and (i - last_rebalance_idx >= rebalance_gap) and holdings:
                 last_rebalance_idx = i
+                
                 mom_scores_all = []
                 for code, df in self.data_map.items():
                     if curr_date not in df.index: continue
                     idx = df.index.get_indexer([curr_date], method='nearest')[0]
                     if idx < MOMENTUM_WINDOW: continue
                     past_slice = df.iloc[idx-MOMENTUM_WINDOW : idx+1]
-                    mom = (past_slice['nav'].iloc[-1] - past_slice['nav'].iloc[0]) / past_slice['nav'].iloc[0]
+                    if past_slice.empty: continue
+                    start_p = past_slice['nav'].iloc[0]
+                    end_p = past_slice['nav'].iloc[-1]
+                    mom = (end_p - start_p) / start_p
                     mom_scores_all.append({'code': code, 'mom': mom})
                 
                 if mom_scores_all:
                     mom_scores_all.sort(key=lambda x: x['mom'], reverse=True)
+                    # 动态 cutoff
                     top_n = min(len(mom_scores_all), TOP_N_COUNT)
                     cutoff_val = mom_scores_all[top_n-1]['mom'] if top_n > 0 else -999
                     
@@ -848,12 +862,14 @@ class PortfolioBacktester:
                             gross = info['shares'] * h_curr_nav
                             net = gross * (1 - fee_rate)
                             
-                            trades.append({'date': curr_date, 'action': 'REBALANCE', 'code': h_code, 'name': info['name'], 'price': h_curr_nav, 'reason': f"动能衰竭 (跌出Top{TOP_N_COUNT})", 'pnl': net - (info['shares'] * info['cost'])})
-                            receivables.append({'unlock_date': curr_date + datetime.timedelta(days=SETTLEMENT_DAYS), 'amount': net})
+                            trades.append({'date': curr_date, 'action': 'REBALANCE', 'code': h_code, 'name': info['name'], 'price': h_curr_nav, 'reason': f"动能衰竭 (跌出Top50)", 'pnl': net - (info['shares'] * info['cost'])})
+                            
+                            unlock_dt = curr_date + datetime.timedelta(days=SETTLEMENT_DAYS)
+                            receivables.append({'unlock_date': unlock_dt, 'amount': net})
                             del holdings[h_code]
                             rebalance_sells.add(h_code)
 
-            # --- 3. 常规持仓管理 (引入 EMA21 破位确认) ---
+            # --- 3. 常规持仓管理 (止盈止损 + 僵尸持仓清理) ---
             for code in list(holdings.keys()):
                 if code in rebalance_sells: continue
                 info = holdings[code]
@@ -869,117 +885,165 @@ class PortfolioBacktester:
                 profit_pct = (current_nav - info['cost']) / info['cost']
                 hold_days = (curr_date - pd.to_datetime(info['entry_date'])).days
                 
-                # 分批止盈
-                if partial_profit_pct > 0 and profit_pct > partial_profit_pct and not info.get('partial_sold', False):
-                    sell_ratio = 0.5
-                    shares_to_sell = info['shares'] * sell_ratio
-                    fee_rate = 0.015 if hold_days < 7 else 0.0
-                    net = (shares_to_sell * current_nav) * (1 - fee_rate)
-                    trades.append({'date': curr_date, 'action': 'SELL(50%)', 'code': code, 'name': info['name'], 'price': current_nav, 'reason': f"Partial Lock (+{partial_profit_pct:.0%})", 'pnl': net - (shares_to_sell * info['cost'])})
-                    receivables.append({'unlock_date': curr_date + datetime.timedelta(days=SETTLEMENT_DAYS), 'amount': net})
-                    info['shares'] -= shares_to_sell
-                    info['partial_sold'] = True
+                action_type = None; sell_ratio = 0.0; reason = ""
                 
-                # 信号判断 (同步 analyze_structure 中的 EMA21 确认逻辑)
+                # 分批止盈 (Configurable)
+                if partial_profit_pct > 0 and profit_pct > partial_profit_pct and not info.get('partial_sold', False):
+                    action_type = "PARTIAL"; sell_ratio = 0.5; reason = f"Partial Lock (+{partial_profit_pct:.0%})"; info['partial_sold'] = True
+                
+                dd = (info['highest_nav'] - current_nav) / info['highest_nav']
+                is_trailing = dd > TRAILING_STOP_PCT and current_nav > info['cost'] * TRAILING_STOP_ACTIVATE
                 signal = WaveEngine.analyze_structure(df_slice, [])
+                struct_stop = info['stop_loss']
+                hard_stop = info['cost'] * (1 - FUND_STOP_LOSS)
+                target_stop = info['target']
                 
                 sell_str = None
-                dd = (info['highest_nav'] - current_nav) / info['highest_nav']
                 
-                if current_nav >= info['target'] and info['target'] > 0: sell_str = "Target Profit Hit"
-                elif signal['status'] == 'Sell': sell_str = signal['desc'] # 触发背离+破位逻辑
-                elif dd > TRAILING_STOP_PCT and current_nav > info['cost'] * TRAILING_STOP_ACTIVATE: sell_str = "Trailing Stop"
-                elif current_nav < info['cost'] * (1 - FUND_STOP_LOSS): sell_str = "Hard Stop Loss"
-                elif enable_dead_money_check and hold_days > DEAD_MONEY_DAYS and abs(profit_pct) < DEAD_MONEY_THRESHOLD:
-                    sell_str = "Dead Money Clean"
+                if current_nav >= target_stop and target_stop > 0: sell_str = "Target Profit Hit (Goal)"
+                elif current_nav < max(struct_stop, hard_stop): sell_str = "Structure Break"
+                elif is_trailing: sell_str = "Trailing Stop"
+                elif signal['status'] == 'Sell': sell_str = signal['desc']
                 
-                if sell_str:
-                    shares_to_sell = info['shares']
+                # === 新增: Dead Money Check (同步模拟盘逻辑) ===
+                if enable_dead_money_check and not sell_str:
+                    if hold_days > DEAD_MONEY_DAYS and abs(profit_pct) < DEAD_MONEY_THRESHOLD:
+                        sell_str = f"Dead Money (Hold > {DEAD_MONEY_DAYS}d, Returns < {DEAD_MONEY_THRESHOLD:.0%})"
+                
+                if sell_str: action_type = "CLEAR"; sell_ratio = 1.0; reason = sell_str
+                
+                if action_type:
+                    shares_to_sell = info['shares'] * sell_ratio
+                    gross = shares_to_sell * current_nav
                     fee_rate = 0.015 if hold_days < 7 else 0.0
-                    net = (shares_to_sell * current_nav) * (1 - fee_rate)
-                    trades.append({'date': curr_date, 'action': 'SELL', 'code': code, 'name': info['name'], 'price': current_nav, 'reason': sell_str, 'pnl': net - (shares_to_sell * info['cost'])})
-                    receivables.append({'unlock_date': curr_date + datetime.timedelta(days=SETTLEMENT_DAYS), 'amount': net})
-                    del holdings[code]
+                    net = gross * (1 - fee_rate)
+                    trades.append({
+                        'date': curr_date, 
+                        'action': 'SELL' if sell_ratio==1 else 'SELL(50%)', 
+                        'code': code, 
+                        'name': info['name'], 
+                        'price': current_nav, 
+                        'reason': f"{reason}", 
+                        'pnl': net - (shares_to_sell * info['cost'])
+                    })
+                    
+                    unlock_dt = curr_date + datetime.timedelta(days=SETTLEMENT_DAYS)
+                    receivables.append({'unlock_date': unlock_dt, 'amount': net})
+                    
+                    if action_type == "CLEAR": del holdings[code]
+                    else: info['shares'] -= shares_to_sell
 
-            # --- 4. 买入逻辑 ---
-            # 重新计算权益
-            current_hold_val = sum([h['shares'] * self.data_map[c].loc[curr_date]['nav'] for c, h in holdings.items() if curr_date in self.data_map[c].index])
-            current_equity = capital + pending_val + current_hold_val
+            # --- 4. 买入逻辑 (筛选强动能品种) ---
+            current_hold_val = 0
+            for h_code, h in holdings.items():
+                df = self.data_map.get(h_code)
+                if df is not None and curr_date in df.index:
+                    current_hold_val += h['shares'] * df.loc[curr_date]['nav']
+                elif df is not None:
+                      idx = df.index.get_indexer([curr_date], method='pad')[0]
+                      if idx != -1: current_hold_val += h['shares'] * df.iloc[idx]['nav']
+            current_equity = capital + sum([r['amount'] for r in receivables]) + current_hold_val
 
             if len(holdings) < max_holdings and capital > 2000:
+                candidates = []
+                held_clean_names = {re.sub(r'[A-Z]$', '', h['name']) for h in holdings.values()}
+                
                 momentum_scores = []
                 for code, df in self.data_map.items():
                     if curr_date not in df.index: continue
                     idx = df.index.get_indexer([curr_date], method='nearest')[0]
                     if idx < MOMENTUM_WINDOW: continue
                     past_slice = df.iloc[idx-MOMENTUM_WINDOW : idx+1]
-                    mom = (past_slice['nav'].iloc[-1] - past_slice['nav'].iloc[0]) / past_slice['nav'].iloc[0]
-                    momentum_scores.append({'code': code, 'mom': mom})
+                    if past_slice.empty: continue
+                    start_p = past_slice['nav'].iloc[0]
+                    end_p = past_slice['nav'].iloc[-1]
+                    mom_score = (end_p - start_p) / start_p
+                    momentum_scores.append({'code': code, 'mom': mom_score})
                 
+                # 按照120日涨幅排序 (与大屏逻辑一致)
                 momentum_scores.sort(key=lambda x: x['mom'], reverse=True)
-                whitelist_codes = {x['code'] for x in momentum_scores[:TOP_N_COUNT]}
+                # 严格对齐大屏：只看排名前 50 的强势品种
+                top_n = min(len(momentum_scores), TOP_N_COUNT)
+                whitelist_codes = {x['code'] for x in momentum_scores[:top_n]}
                 
-                candidates = []
-                held_names = {re.sub(r'[A-Z]$', '', h['name']) for h in holdings.values()}
-                
-                for code in whitelist_codes:
+                for code, df in self.data_map.items():
                     if code in holdings: continue
-                    df = self.data_map[code]
+                    if code not in whitelist_codes: continue 
+                    if curr_date not in df.index: continue
                     df_slice = df.loc[:curr_date]
                     if len(df_slice) < 130: continue
                     sig = WaveEngine.analyze_structure(df_slice, [])
-                    
                     if sig['status'] == 'Buy' and sig['score'] >= 80:
-                        name = next((f['name'] for f in self.pool if f['code'] == code), code)
-                        if re.sub(r'[A-Z]$', '', name) not in held_names:
-                            candidates.append((code, name, df_slice['nav'].iloc[-1], sig))
+                         candidates.append((code, df_slice['nav'].iloc[-1], sig))
                 
-                candidates.sort(key=lambda x: x[3]['score'], reverse=True)
+                candidates.sort(key=lambda x: x[2]['score'], reverse=True)
                 
-                for cand_code, cand_name, cand_price, cand_sig in candidates:
-                    if len(holdings) >= max_holdings or capital < 2000 or daily_buy_count >= max_daily_buys: break
+                for cand in candidates:
+                    if len(holdings) >= max_holdings: break
+                    if capital < 2000: break
+                    if daily_buy_count >= max_daily_buys: break 
                     
-                    # 仓位计算 (Kelly/ATR/Fixed)
+                    code, price, sig = cand
+                    name = next((f['name'] for f in self.pool if f['code'] == code), code)
+                    clean_name = re.sub(r'[A-Z]$', '', name)
+                    if clean_name in held_clean_names: continue 
+                    
+                    # === 核心修改：统一仓位管理逻辑 (与模拟盘保持一致) ===
+                    target_amt = 0
+                    
                     if sizing_model == "Kelly":
+                        # 模拟盘逻辑: 胜率55%, 赔率2.5 -> 半凯利 (Half Kelly)
+                        # f = (2.5 * 0.55 - 0.45) / 2.5 = 0.37
+                        # Half = 0.185 (18.5%)
                         k_f = WaveEngine.calculate_kelly(0.55, 2.5) 
-                        target_amt = min(current_equity * (k_f * 0.5), current_equity * 0.30)
-                    elif sizing_model == "ATR" and cand_sig.get('atr', 0) > 0:
-                        target_amt = min((current_equity * RISK_PER_TRADE) / (2 * cand_sig['atr']) * cand_price, current_equity * 0.30)
+                        target_amt = current_equity * (k_f * 0.5)
+                        # 激进凯利也需要封顶，避免单只爆仓
+                        target_amt = min(target_amt, current_equity * 0.30)
+                        
+                    elif sizing_model == "ATR":
+                        # 模拟盘逻辑: 2倍ATR止损，总账户风险1%
+                        atr_val = sig.get('atr', 0)
+                        if atr_val > 0:
+                            risk_per_trade = current_equity * RISK_PER_TRADE
+                            stop_loss_width = 2 * atr_val
+                            shares_to_buy = risk_per_trade / stop_loss_width
+                            target_amt = shares_to_buy * price
+                            target_amt = min(target_amt, current_equity * 0.30) # 封顶
+                        else:
+                            # ATR计算失败时回退到均衡
+                            target_amt = current_equity * (1.0 / max_holdings)
+
                     elif sizing_model == "Fixed":
+                        # 单利模式 (固定金额)
                         target_amt = FIXED_BET_SIZE
-                    else:
-                        target_amt = current_equity * min(0.33, 2.0 / max_holdings)
+                        
+                    else: 
+                        # Default: "Equal" (均衡复利滚雪球)
+                        # 动态均衡: 资金利用率高，但不如Kelly激进
+                        position_ratio = min(0.33, 2.0 / max_holdings) 
+                        target_amt = current_equity * position_ratio
                     
                     actual_amt = min(capital, target_amt)
-                    if actual_amt >= 100:
+                    
+                    if actual_amt >= 100: 
                         capital -= actual_amt
-                        holdings[cand_code] = {
-                            'shares': actual_amt / cand_price, 'cost': cand_price, 
-                            'stop_loss': cand_sig['stop_loss'], 'target': cand_sig['target'], 
-                            'entry_date': curr_date, 'name': cand_name, 'highest_nav': cand_price
-                        }
-                        trades.append({'date': curr_date, 'action': 'BUY', 'code': cand_code, 'name': cand_name, 'price': cand_price, 'shares': actual_amt / cand_price, 'reason': cand_sig['desc']})
+                        shares = actual_amt / price
+                        holdings[code] = {'shares': shares, 'cost': price, 'stop_loss': sig['stop_loss'], 'target': sig['target'], 'entry_date': curr_date, 'name': name, 'highest_nav': price}
+                        trades.append({'date': curr_date, 'action': 'BUY', 'code': code, 'name': name, 'price': price, 'shares': shares, 'reason': f"{sig['desc']} ({sizing_model})"})
+                        held_clean_names.add(clean_name)
                         daily_buy_count += 1
-
-            # --- 数据记录 ---
-            if current_equity > peak_equity: peak_equity = current_equity
             
-            # 计算 Benchmark
-            bench_val = bench_cash
-            if not benchmark_df.empty:
-                b_now = benchmark_df.loc[curr_date]['nav'] if curr_date in benchmark_df.index else 0
-                if b_now == 0:
-                    try:
-                        b_idx = benchmark_df.index.get_indexer([curr_date], method='pad')[0]
-                        if b_idx != -1: b_now = benchmark_df.iloc[b_idx]['nav']
-                    except: pass
-                bench_val += bench_shares * b_now
-
+            if current_equity > peak_equity: peak_equity = current_equity
+            dd_pct = (current_equity - peak_equity) / peak_equity if peak_equity > 0 else 0
+            
             equity_curve.append({
-                'date': curr_date, 'val': current_equity, 'bench_val': bench_val, 
-                'principal': total_principal, 'drawdown': (current_equity - peak_equity) / peak_equity
+                'date': curr_date, 
+                'val': current_equity, 
+                'bench_val': bench_val, # 添加 Benchmark 净值
+                'principal': total_principal,
+                'drawdown': dd_pct
             })
-            drawdown_curve.append({'date': curr_date, 'val': (current_equity - peak_equity) / peak_equity})
+            drawdown_curve.append({'date': curr_date, 'val': dd_pct})
             
         return {'equity': equity_curve, 'drawdown': drawdown_curve, 'trades': trades}
 
