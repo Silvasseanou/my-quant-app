@@ -492,10 +492,15 @@ class WaveEngine:
 
     @staticmethod
     def analyze_structure(df_slice: pd.DataFrame, pivots: List[Dict]) -> Dict:
-        if len(df_slice) < 100: return {'status': 'Wait', 'score': 0, 'pattern': 'None', 'stop_loss': 0, 'target': 0, 'desc': '数据不足'}
+        """
+        全量波浪结构分析引擎 (v37.5 增强确认版)
+        增加了：EMA21 破位确认逻辑、多天不收回判定、双重风险过滤
+        """
+        if len(df_slice) < 100: 
+            return {'status': 'Wait', 'score': 0, 'pattern': 'None', 'stop_loss': 0, 'target': 0, 'desc': '数据不足'}
         
+        # 1. 基础数据提取
         last_nav = df_slice['nav'].iloc[-1]
-        
         ao = df_slice['ao']
         ao_curr = ao.iloc[-1]
         ao_prev = ao.iloc[-2]
@@ -512,11 +517,44 @@ class WaveEngine:
         
         result = {'status': 'Wait', 'score': 0, 'pattern': 'None', 'stop_loss': 0, 'target': 0, 'desc': '', 'atr': atr}
         
-        # 基础过滤
+        # === 核心：风险先行逻辑 (策略 C: 逃顶与确认) ===
+        if len(df_slice) > 60:
+            price_window = df_slice['nav'].iloc[-60:]
+            ao_window = df_slice['ao'].iloc[-60:]
+            
+            # A. 判断是否出现“动能背离”预警
+            is_divergence_alert = False
+            if last_nav >= price_window.max() * 0.99: # 价格处于近期最高点附近
+                if ao_curr < ao_window.max() * 0.7:  # 但动能明显不足前期波峰
+                    is_divergence_alert = True
+            
+            # B. 判断是否“无法迅速收回 EMA21”
+            # 逻辑：过去3个交易日中，收盘价低于EMA21的天数 >= 2天
+            recent_navs = df_slice['nav'].iloc[-3:]
+            recent_ema21 = df_slice['ema_21'].iloc[-3:]
+            failed_to_recover = (recent_navs < recent_ema21).sum() >= 2
+            
+            # C. 判定最终 Sell 信号
+            sell_reason = ""
+            if is_divergence_alert and (failed_to_recover or last_nav < low_20):
+                sell_reason = "顶背离确认 + 价格有效跌破EMA21或20日新低"
+            elif last_nav < ema89:
+                sell_reason = "趋势彻底破位：跌破长期生命线(EMA89)"
+            
+            if sell_reason:
+                result.update({
+                    'status': 'Sell', 
+                    'score': -95, 
+                    'pattern': 'Divergence Breakdown', 
+                    'desc': sell_reason
+                })
+                return result # 风险触发，直接返回，不执行买入逻辑
+
+        # === 基础过滤：熊市不入场 ===
         if last_nav < ema89 and rsi > 30:
              return {'status': 'Wait', 'score': 0, 'pattern': 'Bearish', 'stop_loss': 0, 'target': 0, 'desc': '价格在生命线(EMA89)之下，观望', 'atr': atr}
 
-        # === 策略 A: 结构性突破 ===
+        # === 策略 A: 结构性突破 (顺势增仓/建仓) ===
         if last_nav > high_20:
             if ao_curr > 0 and ao_curr > ao_prev: 
                 result.update({
@@ -529,32 +567,19 @@ class WaveEngine:
                 })
                 return result
 
-        # === 策略 B: 趋势回调 ===
+        # === 策略 B: 趋势回调 (左侧入场点) ===
         if ema21 > ema55: 
             if last_nav < ema21 and last_nav > ema55:
-                if ao_curr > 0:
+                if ao_curr > 0: # 即使回调，动能柱也需在零轴上方（强趋势）
                     result.update({
                         'status': 'Buy', 
                         'score': 80, 
                         'pattern': 'Trend Pullback', 
-                        'desc': '多头趋势回踩支撑',
+                        'desc': '多头趋势回踩EMA21/55支撑',
                         'stop_loss': ema89, 
                         'target': last_nav * 1.2
                     })
                     return result
-
-        # === 策略 C: 逃顶 ===
-        if len(df_slice) > 60:
-            price_window = df_slice['nav'].iloc[-60:]
-            if last_nav >= price_window.max() * 0.99:
-                ao_window = df_slice['ao'].iloc[-60:]
-                if ao_curr < ao_window.max() * 0.7: 
-                     result.update({
-                        'status': 'Sell', 
-                        'score': -95, 
-                        'pattern': 'Wave 5 Divergence', 
-                        'desc': '价格新高但动能衰竭 (顶背离)'
-                    })
 
         return result
 
