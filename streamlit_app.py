@@ -1051,92 +1051,59 @@ class PortfolioManager:
     def __init__(self):
         # 1. 初始化 Supabase 连接
         self.conn = st.connection("supabase", type=SupabaseConnection)
-        self.user_id = "default_user"  # 对应数据库中的主键 ID
+        self.user_id = "default_user" 
         
         # 2. 从云端加载数据
         self.data = self.load()
         
-        # 3. 每次初始化时，尝试结算在途订单（保持逻辑不变）
+        # 3. 每次初始化时，尝试结算在途订单
         self.settle_orders()
 
     def load(self):
-        """从 Supabase 云端读取数据（已移除本地迁移逻辑）"""
+        """从 Supabase 云端读取数据"""
         try:
-            # 1. 直接查询云端
             res = self.conn.table("trader_storage").select("portfolio_data").eq("id", self.user_id).execute()
-            
             if res.data and len(res.data) > 0:
                 data = res.data[0]['portfolio_data']
-                
-                # --- 核心兼容性保持（防止字段缺失报错） ---
+                # 核心兼容性保持
                 if "pending_orders" not in data: data["pending_orders"] = []
                 if "history" not in data: data["history"] = []
                 if "capital" not in data: data["capital"] = DEFAULT_CAPITAL
-                
-                for h in data.get("holdings", []):
-                    if "lots" not in h or not h["lots"]:
-                        h["lots"] = [{"date": "2020-01-01", "shares": h["shares"], "cost_per_share": h["cost"]}]
+                if "holdings" not in data: data["holdings"] = []
                 return data
             else:
-                # 2. 如果云端完全没数据，则初始化
-                default_data = {"capital": DEFAULT_CAPITAL, "holdings": [], "history": [], "pending_orders": []}
-                # 这里不需要立即 save，让后续操作触发即可，或者保留 save 以便立即创建记录
-                return default_data
-                
+                return {"capital": DEFAULT_CAPITAL, "holdings": [], "history": [], "pending_orders": []}
         except Exception as e:
             st.error(f"☁️ 云端数据读取失败: {e}")
             return {"capital": DEFAULT_CAPITAL, "holdings": [], "history": [], "pending_orders": []}
 
     def save(self):
-        """将当前内存数据同步到 Supabase 云端"""
+        """同步到 Supabase 云端"""
         try:
-            # 使用 upsert：如果 ID 存在则更新，不存在则插入
             self.conn.table("trader_storage").upsert({
                 "id": self.user_id,
                 "portfolio_data": self.data
             }).execute()
         except Exception as e:
             st.error(f"❌ 云端同步失败: {e}")
-        
-    def reset(self):
-        """重置账户"""
-        self.data = {"capital": DEFAULT_CAPITAL, "holdings": [], "history": [], "pending_orders": []}
-        self.save() # 这里会自动同步到云端
-        return True, "账户已重置为初始状态"
-
-    # --- 以下逻辑方法保持原样，只需确保内部调用的 self.save() 现在是指向云端 ---
-
-    def _get_settlement_date(self, trade_dt):
-        """计算确认日期逻辑保持不变"""
-        is_after_3pm = trade_dt.hour >= 15
-        add_days = 2 if is_after_3pm else 1
-        settle_date = trade_dt.date() + datetime.timedelta(days=add_days)
-        if settle_date.weekday() == 5: settle_date += datetime.timedelta(days=2) 
-        elif settle_date.weekday() == 6: settle_date += datetime.timedelta(days=1) 
-        return settle_date
 
     def settle_orders(self):
-        """
-        结算逻辑真实还原：
-        1. 锁定下单时的成本价，不再随确认净值修正。
-        2. 仅根据真实净值修正实际份额，使入场摩擦体现在持仓盈亏中。
-        """
+        """真实的结算逻辑：锁定下单成本"""
         today = get_bj_time().date()
         new_pending = []
         settled_count = 0
-        
         orders = self.data.get("pending_orders", [])
         if not orders: return 
 
         for order in orders:
             try:
-                settle_date = datetime.datetime.strptime(order['settlement_date'], "%Y-%m-%d").date()
+                s_date_str = order.get('settlement_date', str(today))
+                settle_date = datetime.datetime.strptime(s_date_str, "%Y-%m-%d").date()
             except:
                 settle_date = today
 
             if today >= settle_date:
                 real_nav = 0.0
-                correction_msg = ""
                 try:
                     df_nav = DataService.fetch_nav_history(order['code'])
                     trade_date_dt = pd.to_datetime(order['date']) 
@@ -1145,21 +1112,14 @@ class PortfolioManager:
                 except: pass
 
                 est_price = order.get('cost', order.get('price', 0.0))
-                
                 if real_nav > 0:
-                    buy_amount = order['amount']
-                    # 真实份额计算
-                    order['shares'] = buy_amount / real_nav
-                    
-                    # === 真实化：成本锁定为下单决策价 ===
-                    # 保持 order['cost'] = est_price 不动
-                    
-                    if abs(real_nav - est_price) > 0.0001:
-                        friction_pnl = (real_nav - est_price) * order['shares']
-                        correction_msg = f" | 估值偏差: {est_price:.4f}->{real_nav:.4f} (损耗: ¥{friction_pnl:+.2f})"
-
+                    order['shares'] = order['amount'] / real_nav
+                    # 保持 order['cost'] 为 est_price (下单价) 实现真实摩擦
+                
+                # 调用内部方法 (确保该方法在类定义内)
                 self._add_to_holdings(order)
                 settled_count += 1
+                
                 self.data['history'].append({
                     "date": get_bj_time().strftime('%Y-%m-%d %H:%M:%S'),
                     "action": "CONFIRM",
@@ -1167,8 +1127,8 @@ class PortfolioManager:
                     "name": order['name'],
                     "price": real_nav,
                     "amount": 0,
-                    "reason": f"份额确认 (T+1){correction_msg}", 
-                    "pnl": 0 
+                    "reason": f"份额确认 (T+1) | 真实净值: {real_nav:.4f}",
+                    "pnl": 0
                 })
             else:
                 new_pending.append(order)
@@ -1177,33 +1137,63 @@ class PortfolioManager:
             self.data["pending_orders"] = new_pending
             self.save()
 
+    def _add_to_holdings(self, order):
+        """将订单转入持仓"""
+        code = order['code']
+        shares = order['shares']
+        price = order.get('cost', 0.0) # 下单时的成本
+        date_str = order['date']
+        
+        existing_idx = -1
+        for i, h in enumerate(self.data['holdings']):
+            if h['code'] == code: 
+                existing_idx = i
+                break
+        
+        new_lot = {"date": date_str, "shares": shares, "cost_per_share": price}
+        
+        if existing_idx >= 0:
+            existing = self.data['holdings'][existing_idx]
+            total_shares_old = existing['shares']
+            total_cost_old = existing['cost'] * total_shares_old
+            new_total_shares = total_shares_old + shares
+            existing['shares'] = new_total_shares
+            existing['cost'] = (total_cost_old + (shares * price)) / new_total_shares
+            if "lots" not in existing: existing["lots"] = []
+            existing['lots'].append(new_lot)
+        else:
+            self.data['holdings'].append({
+                "code": code, "name": order['name'], 
+                "shares": shares, "cost": price, 
+                "date": date_str, 
+                "stop_loss": order.get('stop_loss', 0), 
+                "target": order.get('target', 0), 
+                "partial_sold": False,
+                "lots": [new_lot],
+                "highest_nav": price
+            })
+
     def execute_buy(self, code, name, price, amount, stop_loss, target, reason):
-        """买入逻辑保持不变，self.save() 现在会存入云端"""
         if self.data['capital'] < amount: return False, "可用资金不足"
         now = get_bj_time()
-        settlement_date = self._get_settlement_date(now)
-        shares = amount / price
-        self.data['capital'] -= amount
-        
+        settle_date = now.date() + datetime.timedelta(days=1)
+        if settle_date.weekday() >= 5: settle_date += datetime.timedelta(days=2) # 简单周六日跳过
+
         pending_order = {
-            "code": code, "name": name, "shares": shares, "cost": price,
-            "amount": amount,
-            "date": str(now.date()), 
-            "time": now.strftime('%H:%M:%S'),
-            "settlement_date": str(settlement_date),
+            "code": code, "name": name, "shares": amount/price, "cost": price,
+            "amount": amount, "date": str(now.date()), 
+            "settlement_date": str(settle_date),
             "stop_loss": stop_loss, "target": target
         }
+        self.data['capital'] -= amount
         self.data["pending_orders"].append(pending_order)
-        note = "次日确认" if now.hour >= 15 else "T+1确认"
         self.data['history'].append({
             "date": now.strftime('%Y-%m-%d %H:%M:%S'), 
-            "action": "BUY_ORDER", 
-            "code": code, "name": name,
-            "price": price, "amount": amount, 
-            "reason": f"{reason} | {note} | 预计 {settlement_date} 到账"
+            "action": "BUY_ORDER", "code": code, "name": name,
+            "price": price, "amount": amount, "reason": reason, "pnl": 0
         })
         self.save()
-        return True, f"买入申请已提交，等待份额确认 ({settlement_date})"
+        return True, "买入已提交"
 
     def execute_sell(self, code, price, reason, force=False):
         """卖出逻辑：包含惩罚费计算，并将记录同步到云端、流水及飞书"""
