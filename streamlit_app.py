@@ -785,6 +785,7 @@ class PortfolioBacktester:
 
         # === 2. 核心日期循环 ===
         for i, curr_date in enumerate(sorted_dates):
+            daily_buy_count = 0
             # --- 每月定投逻辑 ---
             if monthly_deposit > 0:
                 if curr_date.month != last_month:
