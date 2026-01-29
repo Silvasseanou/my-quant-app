@@ -56,9 +56,9 @@ PAPER_TRADING_FILE = os.path.join(SCRIPT_DIR, "ew_otf_portfolio.json")
 DEFAULT_CAPITAL = 20000.0
 MAX_POSITIONS_DEFAULT = 10 
 RISK_PER_TRADE = 0.01 
-TRAILING_STOP_PCT = 0.08 
+TRAILING_STOP_PCT = 0.15 
 TRAILING_STOP_ACTIVATE = 1.05 
-FUND_STOP_LOSS = 0.08 
+FUND_STOP_LOSS = 0.15 
 MAX_SINGLE_POS_WEIGHT = 0.20 
 DEAD_MONEY_DAYS = 40 
 DEAD_MONEY_THRESHOLD = 0.03 
@@ -1459,7 +1459,7 @@ def render_dashboard():
         st.divider()
         st.markdown("🔧 **策略微调 (Strategy Tweak)**")
         # 新增：分批止盈阈值设置
-        profit_lock_pct = st.slider("分批止盈阈值 (Partial Profit)", 0.05, 0.50, 0.15, 0.05, help="当单笔收益达到此比例时，卖出50%仓位锁定胜局。设为0.5以上约等于不止盈。")
+        profit_lock_pct = st.slider("分批止盈阈值 (Partial Profit)", 0.05, 0.50, 0.25, 0.05, help="当单笔收益达到此比例时，卖出50%仓位锁定胜局。设为0.5以上约等于不止盈。")
         alloc_pct = st.slider("固定仓位模式 (%)", 5, 50, 10, 5, help="仅当不使用 ATR 波动率定仓时生效")
         
         st.caption(f"当前可用资金: ¥{pm.data['capital']:,.0f}")
@@ -1674,7 +1674,7 @@ def render_dashboard():
             
             # 5. 【策略判定】移动止盈
             is_profit_target_hit = (h_highest - item['cost']) / item['cost'] >= 0.05
-            trigger_trailing = is_profit_target_hit and drawdown_from_peak >= 0.08
+            trigger_trailing = is_profit_target_hit and drawdown_from_peak >= 0.15
 
             # --- UI 渲染部分 ---
             est_tag = " (实时)" if used_est else ""
