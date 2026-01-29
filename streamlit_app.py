@@ -1937,29 +1937,32 @@ def render_dashboard():
         with c_right:
             if pending:
                 st.info("⏳ 待确认份额 (Pending)")
-                # 遍历显示待确认订单，并提供修改功能
                 for idx, order in enumerate(pending):
                     with st.expander(f"订单: {order['name']} ({order['amount']:.2f}元)"):
-                        new_amt = st.number_input(f"修改金额", value=float(order['amount']), key=f"edit_amt_{idx}")
+                        old_amt = float(order['amount'])
+                        new_amt = st.number_input(f"修改金额", value=old_amt, key=f"edit_amt_{idx}", step=100.0)
                         
                         col_edit, col_del = st.columns(2)
                         if col_edit.button("确认修改", key=f"btn_edit_{idx}"):
-                            # 更新内存数据
-                            pm.data["pending_orders"][idx]['amount'] = new_amt
-                            # 重新计算对应的份额（按下单时的成本算）
-                            pm.data["pending_orders"][idx]['shares'] = new_amt / order['cost']
-                            pm.save() # 同步到云端 Supabase
-                            st.success("金额已修改")
-                            st.rerun()
-                            
+                            diff = new_amt - old_amt
+                            if diff > pm.data['capital']:
+                                st.error(f"现金不足，无法加价！还差 {diff - pm.data['capital']:.2f} 元")
+                            else:
+                                # 【关键：同步扣除/退回现金】
+                                pm.data['capital'] -= diff 
+                                pm.data["pending_orders"][idx]['amount'] = new_amt
+                                pm.data["pending_orders"][idx]['shares'] = new_amt / order['cost']
+                                pm.save()
+                                st.success(f"同步成功！现金已变动: {-diff:+.2f}")
+                                st.rerun()
+                                
                         if col_del.button("撤销订单", key=f"btn_cancel_{idx}"):
-                            # 撤单需要把钱退回现金账户
+                            # 【关键：撤单钱退回现金】
                             pm.data['capital'] += order['amount']
                             pm.data["pending_orders"].pop(idx)
                             pm.save()
-                            st.success("订单已撤销，资金已退回")
+                            st.success("订单已撤销，资金已回笼")
                             st.rerun()
-                st.divider()
 
             st.subheader("📋 持仓管理 (Holdings)")
             if not holdings: st.caption("暂无持仓")
