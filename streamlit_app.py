@@ -2094,7 +2094,7 @@ def render_dashboard():
             st.subheader("⚔️ 策略竞技场")
             pk_category = st.selectbox(
                 "请选择对比维度", 
-                ["🏆 参数对决排行榜 (寻找最佳 止损 vs 止盈)", 
+                ["🏆 参数对决排行榜 (寻找最佳 止盈位 vs 持仓数)", 
                  "🅰️ 数量限制 PK: 【宽分散(Max=10)】 vs 【强集中(Max=3)】", 
                  "🅱️ 资金模式 PK: 【复利滚雪球】 vs 【单利固定金额】"]
             )
@@ -2104,9 +2104,10 @@ def render_dashboard():
                                  key="pool_choice_pk")
 
             if "参数对决" in pk_category:
-                st.info("💡 系统将尝试不同的止损位和止盈位组合，为您筛选出回撤比最高（夏普得分）的最优解。")
+                st.info("💡 系统将尝试不同的止盈位和持仓限制组合，为您筛选出绩效得分最高的最优解。")
                 c_opt1, c_opt2 = st.columns(2)
-                test_stops = c_opt1.multiselect("测试止损位 (Stop Loss)", [0.05, 0.08, 0.10, 0.12, 0.15], default=[0.05, 0.08, 0.10])
+                # 修正：测试持仓数量限制，而非可能不存在的 stop_loss_pct
+                test_holdings = c_opt1.multiselect("测试最大持仓数 (Max Holdings)", [3, 5, 8, 10, 15], default=[3, 5, 10])
                 test_profits = c_opt2.multiselect("测试分批止盈位 (Partial Profit)", [0.10, 0.15, 0.20, 0.25, 0.30], default=[0.15, 0.20])
 
                 if st.button("🔥 开启全参数扫描"):
@@ -2118,40 +2119,45 @@ def render_dashboard():
                         pbt.preload_data()
                         
                         results_grid = []
-                        total_combos = len(test_stops) * len(test_profits)
+                        total_combos = len(test_holdings) * len(test_profits)
                         progress_opt = st.progress(0)
                         
-                        for idx, s_pct in enumerate(test_stops):
+                        count = 0
+                        for h_limit in test_holdings:
                             for p_pct in test_profits:
-                                # 运行回测
+                                count += 1
+                                # 修正：移除不支持的 stop_loss_pct，使用经证实的参数
                                 res = pbt.run(
                                     initial_capital=DEFAULT_CAPITAL,
                                     max_daily_buys=3,
-                                    max_holdings=MAX_POSITIONS_DEFAULT,
+                                    max_holdings=h_limit,
                                     enable_rebalance=True,
-                                    stop_loss_pct=s_pct,
                                     partial_profit_pct=p_pct,
                                     sizing_model="Kelly"
                                 )
                                 
-                                if res['equity']:
+                                # 增加安全性检查：确保结果不为空
+                                if res.get('equity') and len(res['equity']) > 0:
                                     df_eq = pd.DataFrame(res['equity'])
+                                    df_dd = pd.DataFrame(res['drawdown'])
+                                    
                                     final_val = df_eq['val'].iloc[-1]
-                                    total_ret = (final_val / df_eq['principal'].iloc[-1]) - 1
-                                    mdd = pd.DataFrame(res['drawdown'])['val'].min()
-                                    # 计算简易评价得分: 收益率 / (绝对回撤 + 5%缓冲)
+                                    principal = df_eq['principal'].iloc[-1]
+                                    total_ret = (final_val / principal) - 1 if principal > 0 else 0
+                                    mdd = df_dd['val'].min() if not df_dd.empty else 0
+                                    
+                                    # 计算绩效得分: 收益率 / (绝对回撤 + 5% 缓冲)
                                     score = total_ret / (abs(mdd) + 0.05)
                                     
                                     results_grid.append({
-                                        "止损策略": f"跌{s_pct:.0%}",
+                                        "持仓限制": f"{h_limit} 只",
                                         "止盈策略": f"涨{p_pct:.0%}",
                                         "总收益率": total_ret,
                                         "最大回撤": mdd,
                                         "绩效得分": score
                                     })
                                 
-                                current_count = idx * len(test_profits) + test_profits.index(p_pct) + 1
-                                progress_opt.progress(current_count / total_combos, text=f"扫描中: {current_count}/{total_combos}")
+                                progress_opt.progress(count / total_combos, text=f"扫描中: {count}/{total_combos}")
                         
                         status.update(label="扫描完成！", state="complete")
                     
@@ -2165,7 +2171,9 @@ def render_dashboard():
                         }).background_gradient(subset=['绩效得分'], cmap='RdYlGn'), use_container_width=True)
                         
                         best = df_grid.iloc[0]
-                        st.success(f"🎊 经测试，在本段行情中最佳组合为：**止损 {best['止损策略']} + 止盈 {best['止盈策略']}**。其得分最高，兼顾了增长与回撤控制。")
+                        st.success(f"🎊 经测试，在本段行情中最佳组合为：**持仓 {best['持仓限制']} + 止盈 {best['止盈策略']}**。")
+                    else:
+                        st.warning("未能生成有效的测试结果，请检查日期范围或股票池数据。")
             
             else:
                 # 原有 数量/资金 PK 逻辑
@@ -2200,7 +2208,7 @@ def render_dashboard():
                         
                         stats = []
                         for lbl, res in zip([label_A, label_B], [res_A, res_B]):
-                            if not res: continue
+                            if not res or not res.get('equity'): continue
                             tr = pd.DataFrame(res['trades'])
                             ret = (pd.DataFrame(res['equity'])['val'].iloc[-1] / DEFAULT_CAPITAL) - 1
                             mdd = pd.DataFrame(res['drawdown'])['val'].min()
@@ -2248,12 +2256,12 @@ def render_dashboard():
                         res = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=max_daily, monthly_deposit=deposit_amt, 
                                       override_start_date=test_start, enable_rebalance=True, rebalance_gap=60, sizing_model="Kelly")
                         
-                        if res['equity']:
+                        if res.get('equity'):
                             df_eq = pd.DataFrame(res['equity']); df_tr = pd.DataFrame(res['trades']); df_dd = pd.DataFrame(res['drawdown'])
                             final_val = df_eq['val'].iloc[-1]; final_principal = df_eq['principal'].iloc[-1]
                             results.append({
                                 "入场日期": test_start, 
-                                "持有至今收益率": (final_val - final_principal) / final_principal, 
+                                "持有至今收益率": (final_val - final_principal) / final_principal if final_principal > 0 else 0, 
                                 "经历最大回撤": df_dd['val'].min(), 
                                 "交易胜率": len(df_tr[df_tr['pnl']>0]) / len(df_tr) if not df_tr.empty else 0
                             })
@@ -2275,7 +2283,7 @@ def render_dashboard():
             if st.button("开始分析"):
                 bt = RealBacktester(code, str(start_d), str(end_d))
                 res = bt.run(partial_profit_pct=profit_lock_pct)
-                if "equity" in res:
+                if res.get('equity'):
                     st.subheader("📈 净值曲线")
                     st.line_chart(pd.DataFrame(res['equity']).set_index('date')['val'])
                     st.subheader("📜 交易信号回顾")
@@ -2297,10 +2305,10 @@ def render_dashboard():
                 res = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=3, monthly_deposit=monthly_add, 
                               enable_rebalance=use_rebal, partial_profit_pct=profit_lock_pct, sizing_model="Kelly")
                 
-                if res['equity']:
+                if res.get('equity'):
                     df = pd.DataFrame(res['equity'])
                     final_val = df['val'].iloc[-1]; principal = df['principal'].iloc[-1]
-                    total_ret = (final_val - principal) / principal
+                    total_ret = (final_val - principal) / principal if principal > 0 else 0
                     
                     # 核心指标
                     df['pct_change'] = df['val'].pct_change()
@@ -2342,7 +2350,6 @@ def render_dashboard():
                     
                     with st.expander("查看交易明细"):
                         st.dataframe(pd.DataFrame(res['trades']).sort_values('date', ascending=False), use_container_width=True)
-        
-
+                        
 if __name__ == "__main__":
     render_dashboard()
