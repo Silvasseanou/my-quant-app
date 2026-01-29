@@ -7,3 +7,4 @@ requests
 st-supabase-connection
 supabase
 pytz
+matplotlib
