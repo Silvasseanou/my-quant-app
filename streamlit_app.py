@@ -2166,9 +2166,18 @@ def render_dashboard():
                     if results_grid:
                         df_grid = pd.DataFrame(results_grid).sort_values("绩效得分", ascending=False)
                         st.subheader("🏆 参数表现排行榜")
-                        st.dataframe(df_grid.style.format({
+                        
+                        # 安全处理：防止由于缺少 matplotlib 导致的 background_gradient 报错
+                        styled_df = df_grid.style.format({
                             "总收益率": "{:.2%}", "最大回撤": "{:.2%}", "绩效得分": "{:.2f}"
-                        }).background_gradient(subset=['绩效得分'], cmap='RdYlGn'), use_container_width=True)
+                        })
+                        try:
+                            styled_df = styled_df.background_gradient(subset=['绩效得分'], cmap='RdYlGn')
+                        except ImportError:
+                            # 如果环境中没有 matplotlib，则跳过渐变着色
+                            pass
+                            
+                        st.dataframe(styled_df, use_container_width=True)
                         
                         best = df_grid.iloc[0]
                         st.success(f"🎊 最佳策略组合：止损 {best['止损位']} + 止盈 {best['止盈位']}。")
