@@ -1937,7 +1937,28 @@ def render_dashboard():
         with c_right:
             if pending:
                 st.info("⏳ 待确认份额 (Pending)")
-                st.dataframe(pd.DataFrame(pending)[['name', 'code', 'amount', 'settlement_date']], use_container_width=True, hide_index=True)
+                # 遍历显示待确认订单，并提供修改功能
+                for idx, order in enumerate(pending):
+                    with st.expander(f"订单: {order['name']} ({order['amount']:.2f}元)"):
+                        new_amt = st.number_input(f"修改金额", value=float(order['amount']), key=f"edit_amt_{idx}")
+                        
+                        col_edit, col_del = st.columns(2)
+                        if col_edit.button("确认修改", key=f"btn_edit_{idx}"):
+                            # 更新内存数据
+                            pm.data["pending_orders"][idx]['amount'] = new_amt
+                            # 重新计算对应的份额（按下单时的成本算）
+                            pm.data["pending_orders"][idx]['shares'] = new_amt / order['cost']
+                            pm.save() # 同步到云端 Supabase
+                            st.success("金额已修改")
+                            st.rerun()
+                            
+                        if col_del.button("撤销订单", key=f"btn_cancel_{idx}"):
+                            # 撤单需要把钱退回现金账户
+                            pm.data['capital'] += order['amount']
+                            pm.data["pending_orders"].pop(idx)
+                            pm.save()
+                            st.success("订单已撤销，资金已退回")
+                            st.rerun()
                 st.divider()
 
             st.subheader("📋 持仓管理 (Holdings)")
