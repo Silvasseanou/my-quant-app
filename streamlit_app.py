@@ -2072,7 +2072,7 @@ def render_dashboard():
             csv = df_hist.to_csv(index=False).encode('utf-8-sig')
             st.download_button("📥 导出流水 (CSV)", data=csv, file_name=f"trade_history_{get_bj_time().date()}.csv", mime="text/csv")
 
-with tab3:
+    with tab3:
         st.header("📊 策略时光机 & 压力测试")
         
         # 顶部模式选择
