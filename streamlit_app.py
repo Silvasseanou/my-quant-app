@@ -2073,252 +2073,252 @@ def render_dashboard():
             st.download_button("📥 导出流水 (CSV)", data=csv, file_name=f"trade_history_{get_bj_time().date()}.csv", mime="text/csv")
 
     with tab3:
-    st.header("📊 策略时光机 & 压力测试")
-    
-    # === 核心修复：注入底层类缺失的全局变量，防止 NameError ===
-    if 'TRAILING_STOP_ACTIVATE' not in globals():
-        globals()['TRAILING_STOP_ACTIVATE'] = 1.05
-    
-    # 顶部模式选择
-    mode = st.radio(
-        "选择回测模式", 
-        ["单只基金 (压力测试)", "时光机 (组合回测)", "⚔️ 策略 PK (控制变量法)", "📅 择时分析 (入场点全景图)"], 
-        horizontal=True
-    )
-    
-    # 基础日期配置
-    col_d1, col_d2 = st.columns(2)
-    start_d = col_d1.date_input("开始日期", datetime.date(2022, 1, 1), key="bt_start_date")
-    end_d = col_d2.date_input("结束日期", get_bj_time().date(), key="bt_end_date")
-
-    # =================================================================
-    # 1. 策略 PK 模式 (含参数网格对决)
-    # =================================================================
-    if "PK" in mode:
-        st.subheader("⚔️ 策略竞技场")
-        pk_category = st.selectbox(
-            "请选择对比维度", 
-            ["🏆 参数对决排行榜 (寻找最佳 止损 vs 止盈)", 
-             "🅰️ 数量限制 PK: 【宽分散(Max=10)】 vs 【强集中(Max=3)】", 
-             "🅱️ 资金模式 PK: 【复利滚雪球】 vs 【单利固定金额】"]
+        st.header("📊 策略时光机 & 压力测试")
+        
+        # === 核心修复：注入底层类缺失的全局变量，防止 NameError ===
+        if 'TRAILING_STOP_ACTIVATE' not in globals():
+            globals()['TRAILING_STOP_ACTIVATE'] = 1.05
+        
+        # 顶部模式选择
+        mode = st.radio(
+            "选择回测模式", 
+            ["单只基金 (压力测试)", "时光机 (组合回测)", "⚔️ 策略 PK (控制变量法)", "📅 择时分析 (入场点全景图)"], 
+            horizontal=True
         )
         
-        pool_choice = st.radio("📡 选择回测股票池", 
-                             ["🧪 科学严谨池 (各行业龙头+宽基)", "🎯 激进扫描池 (今日全市场Top)"], 
-                             key="pool_choice_pk")
+        # 基础日期配置
+        col_d1, col_d2 = st.columns(2)
+        start_d = col_d1.date_input("开始日期", datetime.date(2022, 1, 1), key="bt_start_date")
+        end_d = col_d2.date_input("结束日期", get_bj_time().date(), key="bt_end_date")
 
-        if "参数对决" in pk_category:
-            st.info("💡 系统将通过动态注入全局变量，测试不同【止损位】与【止盈位】组合的实战表现。")
-            c_opt1, c_opt2 = st.columns(2)
-            test_stops = c_opt1.multiselect("测试止损位 (Stop Loss)", [0.05, 0.08, 0.10, 0.12, 0.15], default=[0.05, 0.10])
-            test_profits = c_opt2.multiselect("测试分批止盈位 (Partial Profit)", [0.10, 0.15, 0.20, 0.25], default=[0.15, 0.20])
+        # =================================================================
+        # 1. 策略 PK 模式 (含参数网格对决)
+        # =================================================================
+        if "PK" in mode:
+            st.subheader("⚔️ 策略竞技场")
+            pk_category = st.selectbox(
+                "请选择对比维度", 
+                ["🏆 参数对决排行榜 (寻找最佳 止损 vs 止盈)", 
+                 "🅰️ 数量限制 PK: 【宽分散(Max=10)】 vs 【强集中(Max=3)】", 
+                 "🅱️ 资金模式 PK: 【复利滚雪球】 vs 【单利固定金额】"]
+            )
+            
+            pool_choice = st.radio("📡 选择回测股票池", 
+                                 ["🧪 科学严谨池 (各行业龙头+宽基)", "🎯 激进扫描池 (今日全市场Top)"], 
+                                 key="pool_choice_pk")
 
-            if st.button("🔥 开启全参数扫描"):
-                pool = get_pool_by_strategy(pool_choice)
-                pbt = PortfolioBacktester(pool, str(start_d), str(end_d))
-                
-                with st.status("正在进行大规模网格扫描...", expanded=True) as status:
-                    status.write("正在预加载行情数据...")
+            if "参数对决" in pk_category:
+                st.info("💡 系统将通过动态注入全局变量，测试不同【止损位】与【止盈位】组合的实战表现。")
+                c_opt1, c_opt2 = st.columns(2)
+                test_stops = c_opt1.multiselect("测试止损位 (Stop Loss)", [0.05, 0.08, 0.10, 0.12, 0.15], default=[0.05, 0.10])
+                test_profits = c_opt2.multiselect("测试分批止盈位 (Partial Profit)", [0.10, 0.15, 0.20, 0.25], default=[0.15, 0.20])
+
+                if st.button("🔥 开启全参数扫描"):
+                    pool = get_pool_by_strategy(pool_choice)
+                    pbt = PortfolioBacktester(pool, str(start_d), str(end_d))
+                    
+                    with st.status("正在进行大规模网格扫描...", expanded=True) as status:
+                        status.write("正在预加载行情数据...")
+                        pbt.preload_data()
+                        
+                        results_grid = []
+                        total_combos = len(test_stops) * len(test_profits)
+                        progress_opt = st.progress(0)
+                        
+                        count = 0
+                        for s_pct in test_stops:
+                            globals()['stop_loss_pct'] = s_pct 
+                            for p_pct in test_profits:
+                                count += 1
+                                res = pbt.run(
+                                    initial_capital=DEFAULT_CAPITAL,
+                                    max_daily_buys=3,
+                                    max_holdings=MAX_POSITIONS_DEFAULT,
+                                    enable_rebalance=True,
+                                    partial_profit_pct=p_pct,
+                                    sizing_model="Kelly"
+                                )
+                                
+                                if res.get('equity') and len(res['equity']) > 0:
+                                    df_eq = pd.DataFrame(res['equity'])
+                                    final_val = df_eq['val'].iloc[-1]
+                                    total_ret = (final_val / df_eq['principal'].iloc[-1]) - 1
+                                    mdd = pd.DataFrame(res['drawdown'])['val'].min()
+                                    score = total_ret / (abs(mdd) + 0.05)
+                                    
+                                    results_grid.append({
+                                        "止损位": f"{s_pct:.0%}",
+                                        "止盈位": f"{p_pct:.0%}",
+                                        "总收益率": total_ret,
+                                        "最大回撤": mdd,
+                                        "绩效得分": score
+                                    })
+                                
+                                progress_opt.progress(count / total_combos, text=f"扫描中: {count}/{total_combos}")
+                        status.update(label="扫描完成！", state="complete")
+                    
+                    if results_grid:
+                        df_grid = pd.DataFrame(results_grid).sort_values("绩效得分", ascending=False)
+                        st.subheader("🏆 参数表现排行榜")
+                        
+                        # --- 改进后的安全样式处理 ---
+                        # 1. 首先尝试检测 matplotlib 是否可用
+                        import importlib
+                        has_matplotlib = importlib.util.find_spec("matplotlib") is not None
+                        
+                        # 2. 基础格式化（这个不依赖 matplotlib，是安全的）
+                        styled_df = df_grid.style.format({
+                            "总收益率": "{:.2%}", 
+                            "最大回撤": "{:.2%}", 
+                            "绩效得分": "{:.2f}"
+                        })
+                        
+                        # 3. 只有在环境允许的情况下才添加颜色渐变
+                        if has_matplotlib:
+                            try:
+                                styled_df = styled_df.background_gradient(subset=['绩效得分'], cmap='RdYlGn')
+                            except Exception:
+                                pass # 依然失败则退回到无色版本
+                        
+                        st.dataframe(styled_df, use_container_width=True)
+                        
+                        best = df_grid.iloc[0]
+                        st.success(f"🎊 最佳策略组合：止损 {best['止损位']} + 止盈 {best['止盈位']}。")
+
+            else:
+                # 常规 PK 逻辑
+                if st.button("🔥 开始对决"):
+                    globals()['stop_loss_pct'] = 0.10
+                    pool = get_pool_by_strategy(pool_choice)
+                    pbt = PortfolioBacktester(pool, str(start_d), str(end_d))
                     pbt.preload_data()
                     
-                    results_grid = []
-                    total_combos = len(test_stops) * len(test_profits)
-                    progress_opt = st.progress(0)
+                    res_A = {}; res_B = {}
+                    label_A = ""; label_B = ""
                     
-                    count = 0
-                    for s_pct in test_stops:
-                        globals()['stop_loss_pct'] = s_pct 
-                        for p_pct in test_profits:
-                            count += 1
-                            res = pbt.run(
-                                initial_capital=DEFAULT_CAPITAL,
-                                max_daily_buys=3,
-                                max_holdings=MAX_POSITIONS_DEFAULT,
-                                enable_rebalance=True,
-                                partial_profit_pct=p_pct,
-                                sizing_model="Kelly"
-                            )
-                            
-                            if res.get('equity') and len(res['equity']) > 0:
-                                df_eq = pd.DataFrame(res['equity'])
-                                final_val = df_eq['val'].iloc[-1]
-                                total_ret = (final_val / df_eq['principal'].iloc[-1]) - 1
-                                mdd = pd.DataFrame(res['drawdown'])['val'].min()
-                                score = total_ret / (abs(mdd) + 0.05)
-                                
-                                results_grid.append({
-                                    "止损位": f"{s_pct:.0%}",
-                                    "止盈位": f"{p_pct:.0%}",
-                                    "总收益率": total_ret,
-                                    "最大回撤": mdd,
-                                    "绩效得分": score
-                                })
-                            
-                            progress_opt.progress(count / total_combos, text=f"扫描中: {count}/{total_combos}")
-                    status.update(label="扫描完成！", state="complete")
-                
-                if results_grid:
-                    df_grid = pd.DataFrame(results_grid).sort_values("绩效得分", ascending=False)
-                    st.subheader("🏆 参数表现排行榜")
-                    
-                    # --- 改进后的安全样式处理 ---
-                    # 1. 首先尝试检测 matplotlib 是否可用
-                    import importlib
-                    has_matplotlib = importlib.util.find_spec("matplotlib") is not None
-                    
-                    # 2. 基础格式化（这个不依赖 matplotlib，是安全的）
-                    styled_df = df_grid.style.format({
-                        "总收益率": "{:.2%}", 
-                        "最大回撤": "{:.2%}", 
-                        "绩效得分": "{:.2f}"
-                    })
-                    
-                    # 3. 只有在环境允许的情况下才添加颜色渐变
-                    if has_matplotlib:
-                        try:
-                            styled_df = styled_df.background_gradient(subset=['绩效得分'], cmap='RdYlGn')
-                        except Exception:
-                            pass # 依然失败则退回到无色版本
-                    
-                    st.dataframe(styled_df, use_container_width=True)
-                    
-                    best = df_grid.iloc[0]
-                    st.success(f"🎊 最佳策略组合：止损 {best['止损位']} + 止盈 {best['止盈位']}。")
+                    if "数量限制" in pk_category:
+                        label_A, label_B = "红方: 宽分散 (Max=10)", "蓝方: 强集中 (Max=3)"
+                        res_A = pbt.run(max_holdings=10, sizing_model="Kelly", enable_rebalance=True, partial_profit_pct=profit_lock_pct)
+                        res_B = pbt.run(max_holdings=3, sizing_model="Kelly", enable_rebalance=True, partial_profit_pct=profit_lock_pct)
+                    elif "资金模式" in pk_category:
+                        label_A, label_B = "红方: 复利 (Kelly)", "蓝方: 单利 (Fixed)"
+                        res_A = pbt.run(sizing_model="Kelly", enable_rebalance=True, partial_profit_pct=profit_lock_pct)
+                        res_B = pbt.run(sizing_model="Fixed", enable_rebalance=True, partial_profit_pct=profit_lock_pct)
 
-        else:
-            # 常规 PK 逻辑
-            if st.button("🔥 开始对决"):
+                    data_dict = {}
+                    if res_A.get('equity'): data_dict[label_A] = pd.DataFrame(res_A['equity']).set_index('date')['val']
+                    if res_B.get('equity'): data_dict[label_B] = pd.DataFrame(res_B['equity']).set_index('date')['val']
+                    
+                    if data_dict:
+                        st.subheader("📈 资金曲线对比")
+                        st.line_chart(pd.DataFrame(data_dict))
+                        
+                        stats = []
+                        for lbl, res in zip([label_A, label_B], [res_A, res_B]):
+                            if not res or not res.get('equity'): continue
+                            tr = pd.DataFrame(res['trades'])
+                            ret = (pd.DataFrame(res['equity'])['val'].iloc[-1] / DEFAULT_CAPITAL) - 1
+                            mdd = pd.DataFrame(res['drawdown'])['val'].min()
+                            stats.append({"策略": lbl, "总收益": f"{ret:.2%}", "最大回撤": f"{mdd:.2%}", "交易数": len(tr)})
+                        st.dataframe(pd.DataFrame(stats), use_container_width=True)
+
+        # =================================================================
+        # 2. 择时分析 (平行宇宙)
+        # =================================================================
+        elif "择时分析" in mode:
+            st.markdown("<div style='background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin-bottom: 20px;'><strong>ℹ️ 功能说明：平行宇宙测试</strong></div>", unsafe_allow_html=True)
+            col_t1, col_t2 = st.columns(2)
+            step_days = col_t1.slider("采样间隔 (天)", 7, 60, 15)
+            max_daily = col_t2.slider("策略限制 (每日买入上限)", 1, 10, 3)
+            
+            enable_deposit = st.checkbox("包含每月定投 (+2000)", value=False)
+            deposit_amt = 2000 if enable_deposit else 0
+            
+            pool_choice = st.radio("📡 选择回测股票池", ["🧪 科学严谨池", "🎯 激进扫描池"], key="pool_choice_timing")
+            
+            if st.button("🚀 开始全景计算"):
                 globals()['stop_loss_pct'] = 0.10
                 pool = get_pool_by_strategy(pool_choice)
                 pbt = PortfolioBacktester(pool, str(start_d), str(end_d))
-                pbt.preload_data()
                 
-                res_A = {}; res_B = {}
-                label_A = ""; label_B = ""
-                
-                if "数量限制" in pk_category:
-                    label_A, label_B = "红方: 宽分散 (Max=10)", "蓝方: 强集中 (Max=3)"
-                    res_A = pbt.run(max_holdings=10, sizing_model="Kelly", enable_rebalance=True, partial_profit_pct=profit_lock_pct)
-                    res_B = pbt.run(max_holdings=3, sizing_model="Kelly", enable_rebalance=True, partial_profit_pct=profit_lock_pct)
-                elif "资金模式" in pk_category:
-                    label_A, label_B = "红方: 复利 (Kelly)", "蓝方: 单利 (Fixed)"
-                    res_A = pbt.run(sizing_model="Kelly", enable_rebalance=True, partial_profit_pct=profit_lock_pct)
-                    res_B = pbt.run(sizing_model="Fixed", enable_rebalance=True, partial_profit_pct=profit_lock_pct)
-
-                data_dict = {}
-                if res_A.get('equity'): data_dict[label_A] = pd.DataFrame(res_A['equity']).set_index('date')['val']
-                if res_B.get('equity'): data_dict[label_B] = pd.DataFrame(res_B['equity']).set_index('date')['val']
-                
-                if data_dict:
-                    st.subheader("📈 资金曲线对比")
-                    st.line_chart(pd.DataFrame(data_dict))
+                with st.status("时光机启动中...", expanded=True) as status:
+                    pbt.preload_data()
+                    test_points = []; curr = pd.to_datetime(start_d)
+                    end_dt = pd.to_datetime(end_d)
+                    while curr < end_dt - datetime.timedelta(days=90):
+                        test_points.append(curr)
+                        curr += datetime.timedelta(days=step_days)
                     
-                    stats = []
-                    for lbl, res in zip([label_A, label_B], [res_A, res_B]):
-                        if not res or not res.get('equity'): continue
-                        tr = pd.DataFrame(res['trades'])
-                        ret = (pd.DataFrame(res['equity'])['val'].iloc[-1] / DEFAULT_CAPITAL) - 1
-                        mdd = pd.DataFrame(res['drawdown'])['val'].min()
-                        stats.append({"策略": lbl, "总收益": f"{ret:.2%}", "最大回撤": f"{mdd:.2%}", "交易数": len(tr)})
-                    st.dataframe(pd.DataFrame(stats), use_container_width=True)
+                    results = []
+                    progress_bar = st.progress(0)
+                    for i, test_start in enumerate(test_points):
+                        progress_bar.progress((i+1)/len(test_points), text=f"模拟入场: {test_start.date()}")
+                        res = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=max_daily, monthly_deposit=deposit_amt, 
+                                      override_start_date=test_start, enable_rebalance=True, sizing_model="Kelly")
+                        if res.get('equity'):
+                            df_eq = pd.DataFrame(res['equity'])
+                            results.append({
+                                "入场日期": test_start, 
+                                "持有至今收益率": (df_eq['val'].iloc[-1] / df_eq['principal'].iloc[-1]) - 1, 
+                                "经历最大回撤": pd.DataFrame(res['drawdown'])['val'].min()
+                            })
+                    status.update(label="计算完成！", state="complete")
+                
+                if results:
+                    df_res = pd.DataFrame(results).set_index("入场日期")
+                    st.subheader("收益率全景图")
+                    st.line_chart(df_res['持有至今收益率'])
 
-    # =================================================================
-    # 2. 择时分析 (平行宇宙)
-    # =================================================================
-    elif "择时分析" in mode:
-        st.markdown("<div style='background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin-bottom: 20px;'><strong>ℹ️ 功能说明：平行宇宙测试</strong></div>", unsafe_allow_html=True)
-        col_t1, col_t2 = st.columns(2)
-        step_days = col_t1.slider("采样间隔 (天)", 7, 60, 15)
-        max_daily = col_t2.slider("策略限制 (每日买入上限)", 1, 10, 3)
-        
-        enable_deposit = st.checkbox("包含每月定投 (+2000)", value=False)
-        deposit_amt = 2000 if enable_deposit else 0
-        
-        pool_choice = st.radio("📡 选择回测股票池", ["🧪 科学严谨池", "🎯 激进扫描池"], key="pool_choice_timing")
-        
-        if st.button("🚀 开始全景计算"):
-            globals()['stop_loss_pct'] = 0.10
-            pool = get_pool_by_strategy(pool_choice)
-            pbt = PortfolioBacktester(pool, str(start_d), str(end_d))
+        # =================================================================
+        # 3. 单只基金回测
+        # =================================================================
+        elif "单只基金" in mode:
+            code = st.text_input("基金/股票代码", "005827")
+            if st.button("开始分析"):
+                bt = RealBacktester(code, str(start_d), str(end_d))
+                res = bt.run(partial_profit_pct=profit_lock_pct)
+                if res.get('equity'):
+                    st.line_chart(pd.DataFrame(res['equity']).set_index('date')['val'])
+                    st.dataframe(pd.DataFrame(res['trades']), use_container_width=True)
+
+        # =================================================================
+        # 4. 普通时光机模式 (组合回测)
+        # =================================================================
+        else:
+            col_s1, col_s2 = st.columns(2)
+            monthly_add = col_s1.slider("💰 每月定投金额", 0, 10000, 2000, step=1000)
+            use_rebal = col_s2.checkbox("开启强制换股 (汰弱留强)", value=True)
             
-            with st.status("时光机启动中...", expanded=True) as status:
+            bt_stop_loss = st.slider("🛡️ 策略止损线 (Stop Loss %)", 0.05, 0.30, 0.10, 0.01)
+            globals()['stop_loss_pct'] = bt_stop_loss
+
+            if st.button("🚀 启动模拟"):
+                pool = get_pool_by_strategy(st.radio("📡 选择股票池", ["🧪 科学严谨池", "🎯 激进扫描池"], key="pool_simple"))
+                pbt = PortfolioBacktester(pool, str(start_d), str(end_d))
                 pbt.preload_data()
-                test_points = []; curr = pd.to_datetime(start_d)
-                end_dt = pd.to_datetime(end_d)
-                while curr < end_dt - datetime.timedelta(days=90):
-                    test_points.append(curr)
-                    curr += datetime.timedelta(days=step_days)
+                res = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=3, monthly_deposit=monthly_add, 
+                              enable_rebalance=use_rebal, partial_profit_pct=profit_lock_pct, sizing_model="Kelly")
                 
-                results = []
-                progress_bar = st.progress(0)
-                for i, test_start in enumerate(test_points):
-                    progress_bar.progress((i+1)/len(test_points), text=f"模拟入场: {test_start.date()}")
-                    res = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=max_daily, monthly_deposit=deposit_amt, 
-                                  override_start_date=test_start, enable_rebalance=True, sizing_model="Kelly")
-                    if res.get('equity'):
-                        df_eq = pd.DataFrame(res['equity'])
-                        results.append({
-                            "入场日期": test_start, 
-                            "持有至今收益率": (df_eq['val'].iloc[-1] / df_eq['principal'].iloc[-1]) - 1, 
-                            "经历最大回撤": pd.DataFrame(res['drawdown'])['val'].min()
-                        })
-                status.update(label="计算完成！", state="complete")
-            
-            if results:
-                df_res = pd.DataFrame(results).set_index("入场日期")
-                st.subheader("收益率全景图")
-                st.line_chart(df_res['持有至今收益率'])
+                if res.get('equity'):
+                    df = pd.DataFrame(res['equity'])
+                    final_val = df['val'].iloc[-1]
+                    total_ret = (final_val / df['principal'].iloc[-1]) - 1
+                    
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("总资产", f"¥{final_val:,.0f}")
+                    c2.metric("总收益率", f"{total_ret:.2%}")
+                    c3.metric("最大回撤", f"{pd.DataFrame(res['drawdown'])['val'].min():.2%}")
+                    
+                    st.subheader("📅 月度收益热力图")
+                    df_m = df.set_index('date').resample('M')['val'].last().pct_change().reset_index()
+                    df_m['year'] = df_m['date'].dt.year; df_m['month'] = df_m['date'].dt.month
+                    pivot = df_m.pivot(index='year', columns='month', values='val')
+                    fig_heat = go.Figure(data=go.Heatmap(z=pivot.values, x=[f"{i}月" for i in range(1, 13)], y=pivot.index, 
+                                                         colorscale='RdYlGn', zmid=0, text=np.around(pivot.values * 100, 1), texttemplate="%{text}%"))
+                    st.plotly_chart(fig_heat, use_container_width=True)
 
-    # =================================================================
-    # 3. 单只基金回测
-    # =================================================================
-    elif "单只基金" in mode:
-        code = st.text_input("基金/股票代码", "005827")
-        if st.button("开始分析"):
-            bt = RealBacktester(code, str(start_d), str(end_d))
-            res = bt.run(partial_profit_pct=profit_lock_pct)
-            if res.get('equity'):
-                st.line_chart(pd.DataFrame(res['equity']).set_index('date')['val'])
-                st.dataframe(pd.DataFrame(res['trades']), use_container_width=True)
-
-    # =================================================================
-    # 4. 普通时光机模式 (组合回测)
-    # =================================================================
-    else:
-        col_s1, col_s2 = st.columns(2)
-        monthly_add = col_s1.slider("💰 每月定投金额", 0, 10000, 2000, step=1000)
-        use_rebal = col_s2.checkbox("开启强制换股 (汰弱留强)", value=True)
-        
-        bt_stop_loss = st.slider("🛡️ 策略止损线 (Stop Loss %)", 0.05, 0.30, 0.10, 0.01)
-        globals()['stop_loss_pct'] = bt_stop_loss
-
-        if st.button("🚀 启动模拟"):
-            pool = get_pool_by_strategy(st.radio("📡 选择股票池", ["🧪 科学严谨池", "🎯 激进扫描池"], key="pool_simple"))
-            pbt = PortfolioBacktester(pool, str(start_d), str(end_d))
-            pbt.preload_data()
-            res = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=3, monthly_deposit=monthly_add, 
-                          enable_rebalance=use_rebal, partial_profit_pct=profit_lock_pct, sizing_model="Kelly")
-            
-            if res.get('equity'):
-                df = pd.DataFrame(res['equity'])
-                final_val = df['val'].iloc[-1]
-                total_ret = (final_val / df['principal'].iloc[-1]) - 1
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("总资产", f"¥{final_val:,.0f}")
-                c2.metric("总收益率", f"{total_ret:.2%}")
-                c3.metric("最大回撤", f"{pd.DataFrame(res['drawdown'])['val'].min():.2%}")
-                
-                st.subheader("📅 月度收益热力图")
-                df_m = df.set_index('date').resample('M')['val'].last().pct_change().reset_index()
-                df_m['year'] = df_m['date'].dt.year; df_m['month'] = df_m['date'].dt.month
-                pivot = df_m.pivot(index='year', columns='month', values='val')
-                fig_heat = go.Figure(data=go.Heatmap(z=pivot.values, x=[f"{i}月" for i in range(1, 13)], y=pivot.index, 
-                                                     colorscale='RdYlGn', zmid=0, text=np.around(pivot.values * 100, 1), texttemplate="%{text}%"))
-                st.plotly_chart(fig_heat, use_container_width=True)
-
-                st.subheader("📈 策略净值曲线")
-                st.line_chart(df.set_index('date')[['val', 'bench_val']].rename(columns={'val':'我的策略', 'bench_val':'沪深300'}))
+                    st.subheader("📈 策略净值曲线")
+                    st.line_chart(df.set_index('date')[['val', 'bench_val']].rename(columns={'val':'我的策略', 'bench_val':'沪深300'}))
 
 if __name__ == "__main__":
     render_dashboard()
