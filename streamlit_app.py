@@ -1706,7 +1706,7 @@ def render_dashboard():
             with st.spinner(f"正在扫描 {len(holdings)} 个持仓的实时风险..."):
                 for h in holdings:
                     # 使用智能价格获取
-                    curr_price, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
+                    curr_price, df, used_est, info_tag = DataService.get_smart_price(h['code'], h['cost'])
                     
                     if not df.empty:
                         if used_est:
@@ -1956,7 +1956,7 @@ def render_dashboard():
             if not holdings: st.caption("暂无持仓")
             else:
                 for h in holdings:
-                    curr_price, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
+                    curr_price, df, used_est, info_tag = DataService.get_smart_price(h['code'], h['cost'])
                     
                     can_add = False; add_reason = ""
                     res = {'status': 'Unknown', 'desc': '', 'score': 0}
