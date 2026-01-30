@@ -2281,86 +2281,94 @@ def render_dashboard():
                     st.line_chart(pd.DataFrame(res['equity']).set_index('date')['val'])
                     st.dataframe(pd.DataFrame(res['trades']), use_container_width=True)
 
+# === 找到 tab3 中“时光机 (组合回测)”的逻辑部分进行如下替换 ===
+
         # =================================================================
         # 4. 普通时光机模式 (组合回测)
         # =================================================================
         else:
+            st.subheader("🕵️ 组合选基回测 (自定义资金池)")
+            
+            # 1. 获取 Top 200 候选名单
+            with st.spinner("正在获取全市场 Top 200 强势基金名单..."):
+                top_200_pool = DataService.get_market_wide_pool()
+            
+            # 2. 格式化名单供 multiselect 显示
+            # 格式为: "代码 - 基金名称"
+            fund_options = [f"{f['code']} - {f['name']}" for f in top_200_pool]
+            
+            # 3. 提供全选/清空建议
+            col_sel_1, col_sel_2 = st.columns([4, 1])
+            with col_sel_2:
+                select_all = st.checkbox("全选 Top 200", value=True)
+            
+            default_selection = fund_options if select_all else []
+            
+            # 4. 放入页面进行多选
+            selected_strings = st.multiselect(
+                "请选择进入回测池的基金 (支持搜索和删除)",
+                options=fund_options,
+                default=default_selection,
+                help="策略将只会在你选中的这些基金中寻找波浪信号并自动买入。"
+            )
+            
+            # 将选中的字符串解析回回测需要的格式 [{"code": "xxx", "name": "xxx"}]
+            selected_pool = []
+            for s in selected_strings:
+                code_part = s.split(" - ")[0]
+                name_part = s.split(" - ")[1]
+                selected_pool.append({"code": code_part, "name": name_part})
+            
+            st.divider()
+
+            # 5. 其他回测设置
             col_s1, col_s2 = st.columns(2)
             monthly_add = col_s1.slider("💰 每月定投金额", 0, 10000, 2000, step=1000)
-            use_rebal = col_s2.checkbox("开启强制换股 (汰弱留强)", value=True)
+            use_rebal = col_s2.checkbox("开启强制换股 (汰弱留强)", value=True, help="当持仓跌出动能前50名时强制卖出换入更强的")
             
             bt_stop_loss = st.slider("🛡️ 策略止损线 (Stop Loss %)", 0.05, 0.30, 0.10, 0.01)
             globals()['stop_loss_pct'] = bt_stop_loss
 
-            if st.button("🚀 启动模拟"):
-                pool = get_pool_by_strategy(st.radio("📡 选择股票池", ["🧪 科学严谨池", "🎯 激进扫描池"], key="pool_simple"))
-                pbt = PortfolioBacktester(pool, str(start_d), str(end_d))
-                pbt.preload_data()
-                res = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=3, monthly_deposit=monthly_add, 
-                              enable_rebalance=use_rebal, partial_profit_pct=profit_lock_pct, sizing_model="Kelly")
-                
-                if res.get('equity'):
-                    df = pd.DataFrame(res['equity'])
-                    final_val = df['val'].iloc[-1]
-                    total_ret = (final_val / df['principal'].iloc[-1]) - 1
+            if st.button("🚀 启动模拟", use_container_width=True):
+                if not selected_pool:
+                    st.error("请至少选择一只基金进行回测！")
+                else:
+                    # 使用用户选中的 selected_pool 启动回测
+                    pbt = PortfolioBacktester(selected_pool, str(start_d), str(end_d))
+                    pbt.preload_data()
+                    res = pbt.run(
+                        initial_capital=DEFAULT_CAPITAL, 
+                        max_daily_buys=3, 
+                        monthly_deposit=monthly_add, 
+                        enable_rebalance=use_rebal, 
+                        partial_profit_pct=profit_lock_pct, 
+                        sizing_model="Kelly"
+                    )
                     
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("总资产", f"¥{final_val:,.0f}")
-                    c2.metric("总收益率", f"{total_ret:.2%}")
-                    c3.metric("最大回撤", f"{pd.DataFrame(res['drawdown'])['val'].min():.2%}")
-                    
-                    st.subheader("📅 月度收益热力图")
-                    df_m = df.set_index('date').resample('M')['val'].last().pct_change().reset_index()
-                    df_m['year'] = df_m['date'].dt.year; df_m['month'] = df_m['date'].dt.month
-                    pivot = df_m.pivot(index='year', columns='month', values='val')
-                    fig_heat = go.Figure(data=go.Heatmap(z=pivot.values, x=[f"{i}月" for i in range(1, 13)], y=pivot.index, 
-                                                         colorscale='RdYlGn', zmid=0, text=np.around(pivot.values * 100, 1), texttemplate="%{text}%"))
-                    st.plotly_chart(fig_heat, use_container_width=True)
+                    if res.get('equity'):
+                        df = pd.DataFrame(res['equity'])
+                        final_val = df['val'].iloc[-1]
+                        total_ret = (final_val / df['principal'].iloc[-1]) - 1
+                        
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("总资产", f"¥{final_val:,.0f}")
+                        c2.metric("总收益率", f"{total_ret:.2%}")
+                        c3.metric("最大回撤", f"{pd.DataFrame(res['drawdown'])['val'].min():.2%}")
+                        
+                        st.subheader("📈 策略净值曲线")
+                        st.line_chart(df.set_index('date')[['val', 'bench_val']].rename(columns={'val':'我的策略', 'bench_val':'沪深300'}))
 
-                    st.subheader("📈 策略净值曲线")
-                    st.line_chart(df.set_index('date')[['val', 'bench_val']].rename(columns={'val':'我的策略', 'bench_val':'沪深300'}))
-# 请找到代码中 tab3 的最后一部分（约 1250 行左右），在“策略净值曲线”下方添加以下代码：
-
-                if res.get('equity'):
-                    df = pd.DataFrame(res['equity'])
-                    # ... 原有的 metrics 和 chart 代码 ...
-                    
-                    st.subheader("📈 策略净值曲线")
-                    st.line_chart(df.set_index('date')[['val', 'bench_val']].rename(columns={'val':'我的策略', 'bench_val':'沪深300'}))
-
-                    # === 新增：显示成交明细表格 ===
-                    st.divider()
-                    st.subheader("📜 策略成交明细 (对比实盘关键)")
-                    if res.get('trades'):
-                        df_trades = pd.DataFrame(res['trades'])
-                        
-                        # 格式化日期和金额，方便阅读
-                        df_trades['date'] = pd.to_datetime(df_trades['date']).dt.date
-                        
-                        # 按日期倒序排列，最新的在上面
-                        df_trades = df_trades.sort_values(by='date', ascending=False)
-                        
-                        # 显示交互式表格
-                        st.dataframe(
-                            df_trades, 
-                            use_container_width=True,
-                            column_config={
-                                "price": st.column_config.NumberColumn("成交价", format="%.4f"),
-                                "pnl": st.column_config.NumberColumn("盈亏额", format="¥%.2f"),
-                                "shares": st.column_config.NumberColumn("成交份额", format="%.2f"),
-                            }
-                        )
-                        
-                        # 增加导出功能，方便你发到电脑上仔细对比
-                        csv_bt = df_trades.to_csv(index=False).encode('utf-8-sig')
-                        st.download_button(
-                            "📥 导出回测成交记录 (CSV)", 
-                            data=csv_bt, 
-                            file_name=f"backtest_trades_{start_d}_to_{end_d}.csv", 
-                            mime="text/csv"
-                        )
-                    else:
-                        st.info("该时段内策略未触发任何买卖信号。")
+                        # === 成交明细 ===
+                        st.divider()
+                        st.subheader("📜 策略成交明细")
+                        if res.get('trades'):
+                            df_trades = pd.DataFrame(res['trades'])
+                            df_trades['date'] = pd.to_datetime(df_trades['date']).dt.date
+                            df_trades = df_trades.sort_values(by='date', ascending=False)
+                            st.dataframe(df_trades, use_container_width=True)
+                            
+                            csv_bt = df_trades.to_csv(index=False).encode('utf-8-sig')
+                            st.download_button("📥 导出回测报告 (CSV)", data=csv_bt, file_name=f"bt_{get_bj_time().date()}.csv")
 
 if __name__ == "__main__":
     render_dashboard()
