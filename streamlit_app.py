@@ -344,7 +344,7 @@ class DataService:
     @staticmethod
     def get_smart_price(code, cost_basis=0.0):
         """
-        智能决策逻辑：修复了返回值数量，返回 4 个值
+        智能决策逻辑：返回字典格式，增强扩展性
         """
         df = DataService.fetch_nav_history(code)
         est_p, est_pct, info_tag = DataService.get_realtime_estimate(code)
@@ -355,7 +355,6 @@ class DataService:
         
         if not df.empty:
             last_date_str = str(df.index[-1].date())
-            # 如果历史数据已经收录了今天（通常是20点以后）
             if last_date_str == today_str:
                 curr_price = df['nav'].iloc[-1]
                 info_tag = "官方收盘真值"
@@ -368,8 +367,14 @@ class DataService:
             curr_price = est_p
             used_est = True
             
-        # ⚠️ 关键：这里返回 4 个值，调用处必须同步修改
-        return curr_price, df, used_est, info_tag
+        # 返回字典，以后增加字段只需在这里添加，不影响外部调用
+        return {
+            "price": curr_price,
+            "df": df,
+            "used_est": used_est,
+            "info_tag": info_tag,
+            "est_pct": est_pct
+        }
 
     @staticmethod
     @st.cache_data(ttl=3600*24)
@@ -1321,7 +1326,7 @@ class PortfolioManager:
         
         for h in self.data['holdings']:
             # 获取最新价格
-            curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
+            curr_p = DataService.get_smart_price(h['code'], h['cost'])["price"]
             
             # 计算最早买入日期
             first_buy = today_dt
@@ -1475,7 +1480,10 @@ def render_dashboard():
                 progress.progress((i+1)/len(scan_list))
                 
                 # 使用智能价格获取
-                curr_price, df, used_est, info_tag = DataService.get_smart_price(fund['code'])
+                price_data = DataService.get_smart_price(fund['code'])
+                curr_price = price_data["price"]
+                df = price_data["df"]
+                used_est = price_data["used_est"]
                 if df.empty: continue
                 
                 est_nav, _, _ = DataService.get_realtime_estimate(fund['code'])
@@ -1624,8 +1632,11 @@ def render_dashboard():
         
         for i, item in enumerate(USER_PORTFOLIO_CONFIG):
             # 1. 获取智能价格和历史 df
-            curr_price, df, used_est, info_tag = DataService.get_smart_price(item['code'], item['cost'])
-            
+            p_res = DataService.get_smart_price(item['code'], item['cost'])
+            curr_price = p_res["price"]
+            df = p_res["df"]
+            used_est = p_res["used_est"]
+            info_tag = p_res["info_tag"]
             # 数据防御性检查：如果没有 nav 列，跳过
             if df.empty or 'nav' not in df.columns:
                 st.error(f"❌ 无法获取 {item['name']} ({item['code']}) 数据，已跳过")
@@ -1706,7 +1717,10 @@ def render_dashboard():
             with st.spinner(f"正在扫描 {len(holdings)} 个持仓的实时风险..."):
                 for h in holdings:
                     # 使用智能价格获取
-                    curr_price, df, used_est, info_tag = DataService.get_smart_price(h['code'], h['cost'])
+                    mon_res = DataService.get_smart_price(h['code'], h['cost'])
+                    curr_price = mon_res["price"]
+                    df = mon_res["df"]
+                    used_est = mon_res["used_est"]
                     
                     if not df.empty:
                         if used_est:
@@ -1837,7 +1851,7 @@ def render_dashboard():
         # 1. 计算当前所有持仓的浮动盈亏
         total_holdings_pnl = 0
         for h in holdings:
-            curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
+            curr_p = DataService.get_smart_price(h['code'], h['cost'])["price"]
             total_holdings_pnl += (curr_p - h['cost']) * h['shares']
 
         # 2. 获取历史已平仓的累计盈亏 (包含交银亏损)
@@ -1862,7 +1876,9 @@ def render_dashboard():
         st.divider()
 
         # 资产分布卡片（用于核对银行卡余额）
-        total_hold_val = sum(h['shares'] * DataService.get_smart_price(h['code'], h['cost'])[0] for h in holdings)
+        total_hold_val = 0
+        for h in holdings:
+            total_hold_val += h['shares'] * DataService.get_smart_price(h['code'], h['cost'])["price"]
         pending_val = sum([p['amount'] for p in pending])
         total_assets_display = pm.data['capital'] + total_hold_val + pending_val
         
@@ -1878,7 +1894,7 @@ def render_dashboard():
             st.subheader("📊 资产状态")
             hold_vals = []
             for h in holdings:
-                curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
+                curr_p = DataService.get_smart_price(h['code'], h['cost'])["price"]
                 hold_vals.append(h['shares'] * curr_p)
 
             labels = ['现金', '在途'] + [h['name'] for h in holdings]
