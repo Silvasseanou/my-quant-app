@@ -300,17 +300,9 @@ class IndicatorEngine:
         return data
 
 class DataService:
-    # === 智图 API 配置 ===
-    ZT_TOKEN = "0FA3740F-563A-4380-BBD7-E63960A176C2"
-    ZT_BASE = "https://api.zhituapi.com"
-
     @staticmethod
     @st.cache_data(ttl=3600)
     def fetch_nav_history(code):
-        """
-        获取历史净值 (保留 akshare 作为历史基准，智图用于实时)
-        注意：智图的 ssjy 接口是实时日线，历史序列仍建议使用原有逻辑
-        """
         try:
             df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
             if df.empty: return pd.DataFrame()
@@ -320,34 +312,42 @@ class DataService:
             df.set_index('date', inplace=True)
             df.sort_index(inplace=True)
             return df
-        except:
+        except Exception as e: 
             return pd.DataFrame()
+        
+    @staticmethod
+    @st.cache_data(ttl=3600*24)
+    def get_market_index_trend():
+        try:
+            df = DataService.fetch_nav_history("000300")
+            if df.empty: return 0 
+            df = IndicatorEngine.calculate_indicators(df)
+            last_price = df['nav'].iloc[-1]
+            ema144 = df['ema_144'].iloc[-1]
+            if last_price > ema144: return 1
+            else: return -1
+        except: return 0 
 
     @staticmethod
     def get_realtime_estimate(code):
-        """
-        🚀 智图 API 实时引擎 (券商行情源)
-        """
         try:
-            # 接口地址：https://api.zhituapi.com/fund/real/ssjy/代码?token=证书
-            url = f"{DataService.ZT_BASE}/fund/real/ssjy/{code}?token={DataService.ZT_TOKEN}"
-            r = requests.get(url, timeout=3)
+            ts = int(time.time() * 1000)
+            url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={ts}"
+            r = requests.get(url, timeout=1)
             if r.status_code == 200:
-                res = r.json()
-                # 根据智图字段说明：p=最新价, pc=涨跌幅, t=更新时间
-                if res and 'p' in res:
-                    return float(res['p']), float(res['pc']), f"{res['t']} (智图实时)"
+                txt = r.text
+                match = re.findall(r'\((.*?)\)', txt)
+                if match:
+                    json_str = match[0]
+                    data = json.loads(json_str)
+                    return float(data['gsz']), float(data['gszzl']), data['gztime']
             return None, None, None
-        except Exception as e:
-            return None, None, None
-
+        except: return None, None, None
+    
     @staticmethod
     def get_smart_price(code, cost_basis=0.0):
-        """
-        智能决策逻辑：返回字典格式，增强扩展性
-        """
         df = DataService.fetch_nav_history(code)
-        est_p, est_pct, info_tag = DataService.get_realtime_estimate(code)
+        est_p, _, _ = DataService.get_realtime_estimate(code)
         
         curr_price = cost_basis 
         today_str = get_bj_time().date().strftime("%Y-%m-%d")
@@ -357,7 +357,6 @@ class DataService:
             last_date_str = str(df.index[-1].date())
             if last_date_str == today_str:
                 curr_price = df['nav'].iloc[-1]
-                info_tag = "官方收盘真值"
             elif est_p:
                 curr_price = est_p
                 used_est = True
@@ -367,35 +366,7 @@ class DataService:
             curr_price = est_p
             used_est = True
             
-        # 返回字典，以后增加字段只需在这里添加，不影响外部调用
-        return {
-            "price": curr_price,
-            "df": df,
-            "used_est": used_est,
-            "info_tag": info_tag,
-        }
-
-    @staticmethod
-    @st.cache_data(ttl=3600*24)
-    def get_market_wide_pool():
-        """
-        使用智图 API 获取全量基金列表进行筛选
-        """
-        try:
-            url = f"{DataService.ZT_BASE}/fund/list/all?token={DataService.ZT_TOKEN}"
-            r = requests.get(url, timeout=5)
-            data = r.json()
-            # 筛选逻辑：过滤掉债券、货币，保留股票和混合型
-            if isinstance(data, list):
-                pool = []
-                for f in data:
-                    if any(x in f['jjlb'] for x in ['股票', '混合', '指数']):
-                        pool.append({"code": f['code'], "name": f['name']})
-                    if len(pool) >= 200: break
-                return pool
-            return [{"code": "012414", "name": "招商中证白酒指数C"}]
-        except:
-            return [{"code": "012414", "name": "招商中证白酒指数C"}]
+        return curr_price, df, used_est
     
     @staticmethod
     @st.cache_data(ttl=3600*12)
@@ -455,6 +426,43 @@ class DataService:
         
         rankings.sort(key=lambda x: x['mom'], reverse=True)
         return rankings
+        
+    @staticmethod
+    @st.cache_data(ttl=3600*24)
+    def get_market_wide_pool():
+        try:
+            df = ak.fund_open_fund_rank_em(symbol="全部")
+            mask_type = df['基金简称'].str.contains('债|货币|理财|美元|定开|持有|养老|以太|比特币|港股|QDII', regex=True) == False
+            df = df[mask_type]
+            df = df.dropna(subset=['近1年'])
+            df_top = df.sort_values(by="近6月", ascending=False).head(600)
+            
+            best_candidates = {}
+            for _, row in df_top.iterrows():
+                raw_name = row['基金简称']
+                code = str(row['基金代码'])
+                clean_name = re.sub(r'[A-Z]$', '', raw_name) 
+                clean_name = re.sub(r'发起式$', '', clean_name)
+                clean_name = re.sub(r'联接$', '', clean_name)
+                clean_name = re.sub(r'ETF$', '', clean_name)
+                
+                is_current_c = raw_name.endswith('C')
+                
+                if clean_name not in best_candidates:
+                    best_candidates[clean_name] = {"code": code, "name": raw_name, "is_c": is_current_c}
+                else:
+                    existing_is_c = best_candidates[clean_name]['is_c']
+                    if is_current_c and not existing_is_c:
+                        best_candidates[clean_name] = {"code": code, "name": raw_name, "is_c": True}
+            
+            pool = []
+            for item in best_candidates.values():
+                pool.append({"code": item['code'], "name": item['name']})
+                if len(pool) >= 200: 
+                    break
+            return pool
+        except Exception as e: 
+            return [{"code": "012414", "name": "招商中证白酒指数C"}]
 
 # === 核心逻辑类 ===
 
@@ -1325,7 +1333,7 @@ class PortfolioManager:
         
         for h in self.data['holdings']:
             # 获取最新价格
-            curr_p = DataService.get_smart_price(h['code'], h['cost'])["price"]
+            curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
             
             # 计算最早买入日期
             first_buy = today_dt
@@ -1479,10 +1487,7 @@ def render_dashboard():
                 progress.progress((i+1)/len(scan_list))
                 
                 # 使用智能价格获取
-                p_res = DataService.get_smart_price(fund['code'])
-                curr_price = p_res["price"]
-                df = p_res["df"]
-                used_est = p_res["used_est"]
+                curr_price, df, _ = DataService.get_smart_price(fund['code'])
                 if df.empty: continue
                 
                 est_nav, _, _ = DataService.get_realtime_estimate(fund['code'])
@@ -1591,10 +1596,7 @@ def render_dashboard():
         bj_now = get_bj_time() # 获取当前北京时间
         
         for h in pm.data['holdings']:
-            mon_res = DataService.get_smart_price(h['code'], h['cost'])
-            curr_p = mon_res["price"]
-            df = mon_res["df"]
-            used_est = mon_res["used_est"]
+            curr_p, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
             
             # --- 核心逻辑：在推送中加入波浪诊断 ---
             if not df.empty:
@@ -1633,11 +1635,9 @@ def render_dashboard():
         if st.button("刷新诊断"): st.rerun()
         
         for i, item in enumerate(USER_PORTFOLIO_CONFIG):
-            diag_res = DataService.get_smart_price(item['code'], item['cost'])
-            curr_price = diag_res["price"]
-            df = diag_res["df"]
-            used_est = diag_res["used_est"]
-            info_tag = diag_res["info_tag"]
+            # 1. 获取智能价格和历史 df
+            curr_price, df, used_est = DataService.get_smart_price(item['code'], item['cost'])
+            
             # 数据防御性检查：如果没有 nav 列，跳过
             if df.empty or 'nav' not in df.columns:
                 st.error(f"❌ 无法获取 {item['name']} ({item['code']}) 数据，已跳过")
@@ -1718,10 +1718,7 @@ def render_dashboard():
             with st.spinner(f"正在扫描 {len(holdings)} 个持仓的实时风险..."):
                 for h in holdings:
                     # 使用智能价格获取
-                    mon_res = DataService.get_smart_price(h['code'], h['cost'])
-                    curr_price = mon_res["price"]
-                    df = mon_res["df"]
-                    used_est = mon_res["used_est"]
+                    curr_price, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
                     
                     if not df.empty:
                         if used_est:
@@ -1852,7 +1849,7 @@ def render_dashboard():
         # 1. 计算当前所有持仓的浮动盈亏
         total_holdings_pnl = 0
         for h in holdings:
-            curr_p = DataService.get_smart_price(h['code'], h['cost'])["price"]
+            curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
             total_holdings_pnl += (curr_p - h['cost']) * h['shares']
 
         # 2. 获取历史已平仓的累计盈亏 (包含交银亏损)
@@ -1877,11 +1874,8 @@ def render_dashboard():
         st.divider()
 
         # 资产分布卡片（用于核对银行卡余额）
-        total_hold_val = 0
-        for h in holdings:
-            total_hold_val += h['shares'] * DataService.get_smart_price(h['code'], h['cost'])["price"]
-
-# 随后更新总资产显示变量
+        total_hold_val = sum(h['shares'] * DataService.get_smart_price(h['code'], h['cost'])[0] for h in holdings)
+        pending_val = sum([p['amount'] for p in pending])
         total_assets_display = pm.data['capital'] + total_hold_val + pending_val
         
         k1, k2, k3, k4 = st.columns(4)
@@ -1896,7 +1890,7 @@ def render_dashboard():
             st.subheader("📊 资产状态")
             hold_vals = []
             for h in holdings:
-                curr_p = DataService.get_smart_price(h['code'], h['cost'])["price"]
+                curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
                 hold_vals.append(h['shares'] * curr_p)
 
             labels = ['现金', '在途'] + [h['name'] for h in holdings]
@@ -1974,11 +1968,7 @@ def render_dashboard():
             if not holdings: st.caption("暂无持仓")
             else:
                 for h in holdings:
-                    price_data = DataService.get_smart_price(h['code'], h['cost'])
-                    curr_price = price_data["price"]
-                    df = price_data["df"]
-                    used_est = price_data["used_est"]
-                    info_tag = price_data.get("info_tag", "")
+                    curr_price, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
                     
                     can_add = False; add_reason = ""
                     res = {'status': 'Unknown', 'desc': '', 'score': 0}
@@ -2291,94 +2281,86 @@ def render_dashboard():
                     st.line_chart(pd.DataFrame(res['equity']).set_index('date')['val'])
                     st.dataframe(pd.DataFrame(res['trades']), use_container_width=True)
 
-# === 找到 tab3 中“时光机 (组合回测)”的逻辑部分进行如下替换 ===
-
         # =================================================================
         # 4. 普通时光机模式 (组合回测)
         # =================================================================
         else:
-            st.subheader("🕵️ 组合选基回测 (自定义资金池)")
-            
-            # 1. 获取 Top 200 候选名单
-            with st.spinner("正在获取全市场 Top 200 强势基金名单..."):
-                top_200_pool = DataService.get_market_wide_pool()
-            
-            # 2. 格式化名单供 multiselect 显示
-            # 格式为: "代码 - 基金名称"
-            fund_options = [f"{f['code']} - {f['name']}" for f in top_200_pool]
-            
-            # 3. 提供全选/清空建议
-            col_sel_1, col_sel_2 = st.columns([4, 1])
-            with col_sel_2:
-                select_all = st.checkbox("全选 Top 200", value=True)
-            
-            default_selection = fund_options if select_all else []
-            
-            # 4. 放入页面进行多选
-            selected_strings = st.multiselect(
-                "请选择进入回测池的基金 (支持搜索和删除)",
-                options=fund_options,
-                default=default_selection,
-                help="策略将只会在你选中的这些基金中寻找波浪信号并自动买入。"
-            )
-            
-            # 将选中的字符串解析回回测需要的格式 [{"code": "xxx", "name": "xxx"}]
-            selected_pool = []
-            for s in selected_strings:
-                code_part = s.split(" - ")[0]
-                name_part = s.split(" - ")[1]
-                selected_pool.append({"code": code_part, "name": name_part})
-            
-            st.divider()
-
-            # 5. 其他回测设置
             col_s1, col_s2 = st.columns(2)
             monthly_add = col_s1.slider("💰 每月定投金额", 0, 10000, 2000, step=1000)
-            use_rebal = col_s2.checkbox("开启强制换股 (汰弱留强)", value=True, help="当持仓跌出动能前50名时强制卖出换入更强的")
+            use_rebal = col_s2.checkbox("开启强制换股 (汰弱留强)", value=True)
             
             bt_stop_loss = st.slider("🛡️ 策略止损线 (Stop Loss %)", 0.05, 0.30, 0.10, 0.01)
             globals()['stop_loss_pct'] = bt_stop_loss
 
-            if st.button("🚀 启动模拟", use_container_width=True):
-                if not selected_pool:
-                    st.error("请至少选择一只基金进行回测！")
-                else:
-                    # 使用用户选中的 selected_pool 启动回测
-                    pbt = PortfolioBacktester(selected_pool, str(start_d), str(end_d))
-                    pbt.preload_data()
-                    res = pbt.run(
-                        initial_capital=DEFAULT_CAPITAL, 
-                        max_daily_buys=3, 
-                        monthly_deposit=monthly_add, 
-                        enable_rebalance=use_rebal, 
-                        partial_profit_pct=profit_lock_pct, 
-                        sizing_model="Kelly"
-                    )
+            if st.button("🚀 启动模拟"):
+                pool = get_pool_by_strategy(st.radio("📡 选择股票池", ["🧪 科学严谨池", "🎯 激进扫描池"], key="pool_simple"))
+                pbt = PortfolioBacktester(pool, str(start_d), str(end_d))
+                pbt.preload_data()
+                res = pbt.run(initial_capital=DEFAULT_CAPITAL, max_daily_buys=3, monthly_deposit=monthly_add, 
+                              enable_rebalance=use_rebal, partial_profit_pct=profit_lock_pct, sizing_model="Kelly")
+                
+                if res.get('equity'):
+                    df = pd.DataFrame(res['equity'])
+                    final_val = df['val'].iloc[-1]
+                    total_ret = (final_val / df['principal'].iloc[-1]) - 1
                     
-                    if res.get('equity'):
-                        df = pd.DataFrame(res['equity'])
-                        final_val = df['val'].iloc[-1]
-                        total_ret = (final_val / df['principal'].iloc[-1]) - 1
-                        
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("总资产", f"¥{final_val:,.0f}")
-                        c2.metric("总收益率", f"{total_ret:.2%}")
-                        c3.metric("最大回撤", f"{pd.DataFrame(res['drawdown'])['val'].min():.2%}")
-                        
-                        st.subheader("📈 策略净值曲线")
-                        st.line_chart(df.set_index('date')[['val', 'bench_val']].rename(columns={'val':'我的策略', 'bench_val':'沪深300'}))
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("总资产", f"¥{final_val:,.0f}")
+                    c2.metric("总收益率", f"{total_ret:.2%}")
+                    c3.metric("最大回撤", f"{pd.DataFrame(res['drawdown'])['val'].min():.2%}")
+                    
+                    st.subheader("📅 月度收益热力图")
+                    df_m = df.set_index('date').resample('M')['val'].last().pct_change().reset_index()
+                    df_m['year'] = df_m['date'].dt.year; df_m['month'] = df_m['date'].dt.month
+                    pivot = df_m.pivot(index='year', columns='month', values='val')
+                    fig_heat = go.Figure(data=go.Heatmap(z=pivot.values, x=[f"{i}月" for i in range(1, 13)], y=pivot.index, 
+                                                         colorscale='RdYlGn', zmid=0, text=np.around(pivot.values * 100, 1), texttemplate="%{text}%"))
+                    st.plotly_chart(fig_heat, use_container_width=True)
 
-                        # === 成交明细 ===
-                        st.divider()
-                        st.subheader("📜 策略成交明细")
-                        if res.get('trades'):
-                            df_trades = pd.DataFrame(res['trades'])
-                            df_trades['date'] = pd.to_datetime(df_trades['date']).dt.date
-                            df_trades = df_trades.sort_values(by='date', ascending=False)
-                            st.dataframe(df_trades, use_container_width=True)
-                            
-                            csv_bt = df_trades.to_csv(index=False).encode('utf-8-sig')
-                            st.download_button("📥 导出回测报告 (CSV)", data=csv_bt, file_name=f"bt_{get_bj_time().date()}.csv")
+                    st.subheader("📈 策略净值曲线")
+                    st.line_chart(df.set_index('date')[['val', 'bench_val']].rename(columns={'val':'我的策略', 'bench_val':'沪深300'}))
+# 请找到代码中 tab3 的最后一部分（约 1250 行左右），在“策略净值曲线”下方添加以下代码：
+
+                if res.get('equity'):
+                    df = pd.DataFrame(res['equity'])
+                    # ... 原有的 metrics 和 chart 代码 ...
+                    
+                    st.subheader("📈 策略净值曲线")
+                    st.line_chart(df.set_index('date')[['val', 'bench_val']].rename(columns={'val':'我的策略', 'bench_val':'沪深300'}))
+
+                    # === 新增：显示成交明细表格 ===
+                    st.divider()
+                    st.subheader("📜 策略成交明细 (对比实盘关键)")
+                    if res.get('trades'):
+                        df_trades = pd.DataFrame(res['trades'])
+                        
+                        # 格式化日期和金额，方便阅读
+                        df_trades['date'] = pd.to_datetime(df_trades['date']).dt.date
+                        
+                        # 按日期倒序排列，最新的在上面
+                        df_trades = df_trades.sort_values(by='date', ascending=False)
+                        
+                        # 显示交互式表格
+                        st.dataframe(
+                            df_trades, 
+                            use_container_width=True,
+                            column_config={
+                                "price": st.column_config.NumberColumn("成交价", format="%.4f"),
+                                "pnl": st.column_config.NumberColumn("盈亏额", format="¥%.2f"),
+                                "shares": st.column_config.NumberColumn("成交份额", format="%.2f"),
+                            }
+                        )
+                        
+                        # 增加导出功能，方便你发到电脑上仔细对比
+                        csv_bt = df_trades.to_csv(index=False).encode('utf-8-sig')
+                        st.download_button(
+                            "📥 导出回测成交记录 (CSV)", 
+                            data=csv_bt, 
+                            file_name=f"backtest_trades_{start_d}_to_{end_d}.csv", 
+                            mime="text/csv"
+                        )
+                    else:
+                        st.info("该时段内策略未触发任何买卖信号。")
 
 if __name__ == "__main__":
     render_dashboard()
