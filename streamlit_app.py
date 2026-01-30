@@ -348,11 +348,11 @@ class DataService:
     def get_smart_price(code, cost_basis=0.0):
         df = DataService.fetch_nav_history(code)
         est_p, _, _ = DataService.get_realtime_estimate(code)
-        
-        curr_price = cost_basis 
+
+        curr_price = cost_basis
         today_str = get_bj_time().date().strftime("%Y-%m-%d")
         used_est = False
-        
+
         if not df.empty:
             last_date_str = str(df.index[-1].date())
             if last_date_str == today_str:
@@ -361,12 +361,14 @@ class DataService:
                 curr_price = est_p
                 used_est = True
             else:
-                curr_price = df['nav'].iloc[-1] 
+                curr_price = df['nav'].iloc[-1]
         elif est_p:
             curr_price = est_p
             used_est = True
-            
-        return curr_price, df, used_est
+
+        # 添加第4个返回值以兼容 Streamlit Cloud 上的代码
+        info_tag = '实时' if used_est else '昨收'
+        return curr_price, df, used_est, info_tag
     
     @staticmethod
     @st.cache_data(ttl=3600*12)
@@ -1333,7 +1335,7 @@ class PortfolioManager:
         
         for h in self.data['holdings']:
             # 获取最新价格
-            curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
+            curr_p, _, _, _ = DataService.get_smart_price(h['code'], h['cost'])
             
             # 计算最早买入日期
             first_buy = today_dt
@@ -1487,7 +1489,7 @@ def render_dashboard():
                 progress.progress((i+1)/len(scan_list))
                 
                 # 使用智能价格获取
-                curr_price, df, _ = DataService.get_smart_price(fund['code'])
+                curr_price, df, _, _ = DataService.get_smart_price(fund['code'])
                 if df.empty: continue
                 
                 est_nav, _, _ = DataService.get_realtime_estimate(fund['code'])
@@ -1596,7 +1598,7 @@ def render_dashboard():
         bj_now = get_bj_time() # 获取当前北京时间
         
         for h in pm.data['holdings']:
-            curr_p, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
+            curr_p, df, used_est, _ = DataService.get_smart_price(h['code'], h['cost'])
             
             # --- 核心逻辑：在推送中加入波浪诊断 ---
             if not df.empty:
@@ -1636,7 +1638,7 @@ def render_dashboard():
         
         for i, item in enumerate(USER_PORTFOLIO_CONFIG):
             # 1. 获取智能价格和历史 df
-            curr_price, df, used_est = DataService.get_smart_price(item['code'], item['cost'])
+            curr_price, df, used_est, _ = DataService.get_smart_price(item['code'], item['cost'])
             
             # 数据防御性检查：如果没有 nav 列，跳过
             if df.empty or 'nav' not in df.columns:
@@ -1718,7 +1720,7 @@ def render_dashboard():
             with st.spinner(f"正在扫描 {len(holdings)} 个持仓的实时风险..."):
                 for h in holdings:
                     # 使用智能价格获取
-                    curr_price, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
+                    curr_price, df, used_est, _ = DataService.get_smart_price(h['code'], h['cost'])
                     
                     if not df.empty:
                         if used_est:
@@ -1849,7 +1851,7 @@ def render_dashboard():
         # 1. 计算当前所有持仓的浮动盈亏
         total_holdings_pnl = 0
         for h in holdings:
-            curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
+            curr_p, _, _, _ = DataService.get_smart_price(h['code'], h['cost'])
             total_holdings_pnl += (curr_p - h['cost']) * h['shares']
 
         # 2. 获取历史已平仓的累计盈亏 (包含交银亏损)
@@ -1890,7 +1892,7 @@ def render_dashboard():
             st.subheader("📊 资产状态")
             hold_vals = []
             for h in holdings:
-                curr_p, _, _ = DataService.get_smart_price(h['code'], h['cost'])
+                curr_p, _, _, _ = DataService.get_smart_price(h['code'], h['cost'])
                 hold_vals.append(h['shares'] * curr_p)
 
             labels = ['现金', '在途'] + [h['name'] for h in holdings]
@@ -1968,7 +1970,7 @@ def render_dashboard():
             if not holdings: st.caption("暂无持仓")
             else:
                 for h in holdings:
-                    curr_price, df, used_est = DataService.get_smart_price(h['code'], h['cost'])
+                    curr_price, df, used_est, _ = DataService.get_smart_price(h['code'], h['cost'])
                     
                     can_add = False; add_reason = ""
                     res = {'status': 'Unknown', 'desc': '', 'score': 0}
