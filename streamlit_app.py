@@ -1592,7 +1592,9 @@ def render_dashboard():
         bj_now = get_bj_time() # 获取当前北京时间
         
         for h in pm.data['holdings']:
-            curr_p, df, used_est, info_tag = DataService.get_smart_price(h['code'], h['cost'])
+            p_data = DataService.get_smart_price(h['code'], h['cost'])
+            curr_p = p_data["price"]
+            df = p_data["df"]
             
             # --- 核心逻辑：在推送中加入波浪诊断 ---
             if not df.empty:
@@ -1631,12 +1633,11 @@ def render_dashboard():
         if st.button("刷新诊断"): st.rerun()
         
         for i, item in enumerate(USER_PORTFOLIO_CONFIG):
-            # 1. 获取智能价格和历史 df
-            p_res = DataService.get_smart_price(item['code'], item['cost'])
-            curr_price = p_res["price"]
-            df = p_res["df"]
-            used_est = p_res["used_est"]
-            info_tag = p_res["info_tag"]
+            p_diag = DataService.get_smart_price(item['code'], item['cost'])
+            curr_price = p_diag["price"]
+            df = p_diag["df"]
+            used_est = p_diag["used_est"]
+            info_tag = p_diag["info_tag"]
             # 数据防御性检查：如果没有 nav 列，跳过
             if df.empty or 'nav' not in df.columns:
                 st.error(f"❌ 无法获取 {item['name']} ({item['code']}) 数据，已跳过")
