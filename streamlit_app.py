@@ -330,19 +330,37 @@ class DataService:
 
     @staticmethod
     def get_realtime_estimate(code):
+        """
+        🚀 新浪财经极速估值引擎
+        优点：响应最快，包含昨收对比，适合14:50后决策
+        """
         try:
-            ts = int(time.time() * 1000)
-            url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={ts}"
-            r = requests.get(url, timeout=1)
-            if r.status_code == 200:
-                txt = r.text
-                match = re.findall(r'\((.*?)\)', txt)
-                if match:
-                    json_str = match[0]
-                    data = json.loads(json_str)
-                    return float(data['gsz']), float(data['gszzl']), data['gztime']
+            # 新浪接口需模拟 Referer 避开 403 错误
+            headers = {
+                "Referer": "https://finance.sina.com.cn/fund/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            # 接口格式：fu_代码
+            url = f"http://hq.sinajs.cn/list=fu_{code}"
+            r = requests.get(url, headers=headers, timeout=2)
+            
+            if r.status_code == 200 and '="' in r.text:
+                # 解析：var hq_str_fu_012414="招商中证白酒C,昨收,今估,日期,时间..."
+                content = r.text.split('"')[1]
+                data = content.split(',')
+                
+                if len(data) < 5: return None, None, None
+                
+                prev_nav = float(data[1])  # 昨日净值
+                est_nav = float(data[2])   # 当前估值
+                est_time = data[4]         # 估值更新时间
+                
+                # 计算实时涨跌幅
+                est_pct = (est_nav - prev_nav) / prev_nav * 100
+                return est_nav, est_pct, est_time
             return None, None, None
-        except: return None, None, None
+        except Exception as e:
+            return None, None, None
     
     @staticmethod
     def get_smart_price(code, cost_basis=0.0):
