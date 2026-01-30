@@ -373,7 +373,6 @@ class DataService:
             "df": df,
             "used_est": used_est,
             "info_tag": info_tag,
-            "est_pct": est_pct
         }
 
     @staticmethod
@@ -1480,10 +1479,10 @@ def render_dashboard():
                 progress.progress((i+1)/len(scan_list))
                 
                 # 使用智能价格获取
-                price_data = DataService.get_smart_price(fund['code'])
-                curr_price = price_data["price"]
-                df = price_data["df"]
-                used_est = price_data["used_est"]
+                p_res = DataService.get_smart_price(fund['code'])
+                curr_price = p_res["price"]
+                df = p_res["df"]
+                used_est = p_res["used_est"]
                 if df.empty: continue
                 
                 est_nav, _, _ = DataService.get_realtime_estimate(fund['code'])
@@ -1592,9 +1591,10 @@ def render_dashboard():
         bj_now = get_bj_time() # 获取当前北京时间
         
         for h in pm.data['holdings']:
-            p_data = DataService.get_smart_price(h['code'], h['cost'])
-            curr_p = p_data["price"]
-            df = p_data["df"]
+            mon_res = DataService.get_smart_price(h['code'], h['cost'])
+            curr_p = mon_res["price"]
+            df = mon_res["df"]
+            used_est = mon_res["used_est"]
             
             # --- 核心逻辑：在推送中加入波浪诊断 ---
             if not df.empty:
@@ -1633,11 +1633,11 @@ def render_dashboard():
         if st.button("刷新诊断"): st.rerun()
         
         for i, item in enumerate(USER_PORTFOLIO_CONFIG):
-            p_diag = DataService.get_smart_price(item['code'], item['cost'])
-            curr_price = p_diag["price"]
-            df = p_diag["df"]
-            used_est = p_diag["used_est"]
-            info_tag = p_diag["info_tag"]
+            diag_res = DataService.get_smart_price(item['code'], item['cost'])
+            curr_price = diag_res["price"]
+            df = diag_res["df"]
+            used_est = diag_res["used_est"]
+            info_tag = diag_res["info_tag"]
             # 数据防御性检查：如果没有 nav 列，跳过
             if df.empty or 'nav' not in df.columns:
                 st.error(f"❌ 无法获取 {item['name']} ({item['code']}) 数据，已跳过")
@@ -1880,7 +1880,8 @@ def render_dashboard():
         total_hold_val = 0
         for h in holdings:
             total_hold_val += h['shares'] * DataService.get_smart_price(h['code'], h['cost'])["price"]
-        pending_val = sum([p['amount'] for p in pending])
+
+# 随后更新总资产显示变量
         total_assets_display = pm.data['capital'] + total_hold_val + pending_val
         
         k1, k2, k3, k4 = st.columns(4)
@@ -1973,7 +1974,11 @@ def render_dashboard():
             if not holdings: st.caption("暂无持仓")
             else:
                 for h in holdings:
-                    curr_price, df, used_est, info_tag = DataService.get_smart_price(h['code'], h['cost'])
+                    price_data = DataService.get_smart_price(h['code'], h['cost'])
+                    curr_price = price_data["price"]
+                    df = price_data["df"]
+                    used_est = price_data["used_est"]
+                    info_tag = price_data.get("info_tag", "")
                     
                     can_add = False; add_reason = ""
                     res = {'status': 'Unknown', 'desc': '', 'score': 0}
