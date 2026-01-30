@@ -2319,6 +2319,48 @@ def render_dashboard():
 
                     st.subheader("📈 策略净值曲线")
                     st.line_chart(df.set_index('date')[['val', 'bench_val']].rename(columns={'val':'我的策略', 'bench_val':'沪深300'}))
+# 请找到代码中 tab3 的最后一部分（约 1250 行左右），在“策略净值曲线”下方添加以下代码：
+
+                if res.get('equity'):
+                    df = pd.DataFrame(res['equity'])
+                    # ... 原有的 metrics 和 chart 代码 ...
+                    
+                    st.subheader("📈 策略净值曲线")
+                    st.line_chart(df.set_index('date')[['val', 'bench_val']].rename(columns={'val':'我的策略', 'bench_val':'沪深300'}))
+
+                    # === 新增：显示成交明细表格 ===
+                    st.divider()
+                    st.subheader("📜 策略成交明细 (对比实盘关键)")
+                    if res.get('trades'):
+                        df_trades = pd.DataFrame(res['trades'])
+                        
+                        # 格式化日期和金额，方便阅读
+                        df_trades['date'] = pd.to_datetime(df_trades['date']).dt.date
+                        
+                        # 按日期倒序排列，最新的在上面
+                        df_trades = df_trades.sort_values(by='date', ascending=False)
+                        
+                        # 显示交互式表格
+                        st.dataframe(
+                            df_trades, 
+                            use_container_width=True,
+                            column_config={
+                                "price": st.column_config.NumberColumn("成交价", format="%.4f"),
+                                "pnl": st.column_config.NumberColumn("盈亏额", format="¥%.2f"),
+                                "shares": st.column_config.NumberColumn("成交份额", format="%.2f"),
+                            }
+                        )
+                        
+                        # 增加导出功能，方便你发到电脑上仔细对比
+                        csv_bt = df_trades.to_csv(index=False).encode('utf-8-sig')
+                        st.download_button(
+                            "📥 导出回测成交记录 (CSV)", 
+                            data=csv_bt, 
+                            file_name=f"backtest_trades_{start_d}_to_{end_d}.csv", 
+                            mime="text/csv"
+                        )
+                    else:
+                        st.info("该时段内策略未触发任何买卖信号。")
 
 if __name__ == "__main__":
     render_dashboard()
